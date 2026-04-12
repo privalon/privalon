@@ -1045,7 +1045,7 @@ How Restic handles each data type in the blueprint:
 - [x] Integrate auto-restore into headscale role (first service with restore)
 - [x] Implement weekly health summary script + cron job
 - [x] Add Prometheus alert rules for backup (failed, stale, size anomaly, drill failed)
-- [ ] Add backup hooks integration to `scripts/hooks/backup.sh` (replace TODO stub)
+- [x] Add backup hooks integration to `scripts/hooks/backup.sh` (replace TODO stub)
 - [ ] Test: destroy control VM → redeploy → verify auto-restore works
 
 ### Phase 4: Monitoring UI + Drills
@@ -1055,7 +1055,7 @@ How Restic handles each data type in the blueprint:
 - [x] Create Grafana backup dashboard (provisioned via Ansible)
   - Last backup time, size, duration, status per service
   - Alert status indicators
-- [ ] Create `scripts/tests/80_verify_backup_restore.sh`
+- [x] Create `scripts/tests/80_verify_backup_restore.sh`
   - Verify repo accessible on both backends
   - Verify snapshot recency
   - Restore to temp dir + verify files

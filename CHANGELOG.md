@@ -6,8 +6,17 @@ The format is based on Keep a Changelog, and this repository now follows Semanti
 
 ## [Unreleased]
 
+### Added
+- **`.github/workflows/ci.yml`**: Added public CI quality gates for Terraform validation, UI unit tests, and deterministic local static verification suites (`static-gateway`, `dashboard-json`, `dns-helper-local`) on push and pull requests.
+- **`docs/roadmap/DELIVERY-MILESTONES.md`**: Added a published delivery plan with milestone scope, acceptance criteria, verification commands, and public artifacts, separate from private funding strategy notes.
+
+### Changed
+- **`Makefile`** + **`ui/requirements.txt`**: Switched the UI install flow to an isolated `.venv-ui` virtualenv and pinned UI Python dependencies to exact versions for more reproducible local and CI behavior.
+- **`scripts/deploy.sh`**: Reworded backup/service placeholder messaging to remove stale TODO/stub wording while preserving existing scope behavior.
+
 ### Documentation
 - Added `docs/roadmap/service-template-and-vaultwarden.md`, a technical design spec for a dedicated tailnet-only Vaultwarden VM plus a reusable internal-service onboarding template covering DNS, internal TLS, backups, logs, monitoring, deployment summary integration, and verification expectations.
+- **`README.md`** + **`docs/README.md`** + **`docs/roadmap/blueprint-improvement.md`** + **`docs/technical/BACKUP.md`**: Added the public delivery milestones link and cleaned stale maturity wording/checklist status so published docs better match shipped behavior.
 
 ## [1.13.39] — 2026-04-11
 

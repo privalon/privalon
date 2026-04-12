@@ -7,7 +7,7 @@ set -euo pipefail
 # - Single command per scope (full, gateway, control)
 # - Reuse existing configs/secrets (terraform.tfvars, state, ansible group_vars)
 # - If the target exists already: ask whether to destroy & recreate
-#   - If yes: attempt to connect + run backup hook (stub), then destroy/replace
+#   - If yes: attempt to connect + run backup hook, then destroy/replace
 #   - If no: run terraform apply (converge) + ansible
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -101,7 +101,7 @@ Scopes:
   control     Deploy control/core; if core exists, optionally destroy+recreate first
   dns         Update DNS A records only (requires Namecheap API credentials in secrets.env)
   join-local  Join THIS machine to Headscale using persisted preauth key (no Terraform/Ansible)
-  service-x   Placeholder for future service deploy
+  service-x   Reserved scope for future service workflows
 
 Options:
   --env <name>   (Required) Named environment under environments/<name>/ (e.g. prod, test).
@@ -1308,7 +1308,7 @@ attempt_backup() {
   if [[ -x "${BACKUP_HOOK}" ]]; then
     "${BACKUP_HOOK}" || true
   else
-    echo "[backup] TODO: ${BACKUP_HOOK} not executable or missing." >&2
+    echo "[backup] ${BACKUP_HOOK} not executable or missing; skipping hook." >&2
   fi
 }
 
@@ -1995,8 +1995,8 @@ scope_dns() {
 }
 
 scope_service_x() {
-  echo "service-x deploy is not implemented yet." >&2
-  echo "TODO: define what 'service X' is (VM? container? Ansible role?) and add a real workflow." >&2
+  echo "service-x is a reserved scope and is not implemented yet." >&2
+  echo "Use full, gateway, control, dns, or join-local scopes." >&2
   exit 2
 }
 

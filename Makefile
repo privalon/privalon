@@ -2,7 +2,9 @@
 
 VERSION := $(shell cat VERSION 2>/dev/null)
 UI_PORT := 8090
-UI_CMD_MATCH := python3 -m uvicorn server:app
+UI_VENV := .venv-ui
+UI_PY := $(UI_VENV)/bin/python3
+UI_CMD_MATCH := .venv-ui/bin/python3 -m uvicorn server:app
 
 help:
 	@echo "Targets:"
@@ -60,7 +62,9 @@ redeploy-control: deploy-control
 redeploy-service-x: deploy-service-x
 
 ui-install:
-	pip3 install -q -r ui/requirements.txt --break-system-packages
+	python3 -m venv $(UI_VENV)
+	$(UI_PY) -m pip install --upgrade pip
+	$(UI_PY) -m pip install -q -r ui/requirements.txt
 
 ui:
 	@pid="$$(lsof -ti tcp:$(UI_PORT) -sTCP:LISTEN 2>/dev/null || true)"; \
@@ -80,7 +84,11 @@ ui:
 	  esac; \
 	fi; \
 	echo "Starting Blueprint UI on http://localhost:$(UI_PORT) — press Ctrl-C to stop"; \
-	cd ui && python3 -m uvicorn server:app --host 0.0.0.0 --port $(UI_PORT) --timeout-graceful-shutdown 1
+	if [ ! -x "$(UI_PY)" ]; then \
+	  echo "UI virtualenv not found. Run 'make ui-install' first." >&2; \
+	  exit 1; \
+	fi; \
+	cd ui && ../$(UI_PY) -m uvicorn server:app --host 0.0.0.0 --port $(UI_PORT) --timeout-graceful-shutdown 1
 
 ui-stop:
 	@pid="$$(lsof -ti tcp:$(UI_PORT) -sTCP:LISTEN 2>/dev/null || true)"; \

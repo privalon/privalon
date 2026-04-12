@@ -58,6 +58,7 @@ If you are new to the repo, read it in this order:
 - Environment operations: [technical/OPERATIONS.md#working-with-environments](technical/OPERATIONS.md#working-with-environments)
 - Portable recovery bundle and restore: [technical/ARCHITECTURE.md#control-plane-recovery-bundle](technical/ARCHITECTURE.md#control-plane-recovery-bundle) + [technical/OPERATIONS.md#portable-recovery-bundle-and-restore](technical/OPERATIONS.md#portable-recovery-bundle-and-restore)
 - DNS routing and service visibility roadmap (remaining work): [roadmap/dns-and-visibility.md](roadmap/dns-and-visibility.md)
+- Published delivery milestones: [roadmap/DELIVERY-MILESTONES.md](roadmap/DELIVERY-MILESTONES.md)
 - Internal service template + Vaultwarden design spec: [roadmap/service-template-and-vaultwarden.md](roadmap/service-template-and-vaultwarden.md)
 - Logging and service observability: [technical/ARCHITECTURE.md](technical/ARCHITECTURE.md) + [technical/OPERATIONS.md](technical/OPERATIONS.md)
 - Blueprint improvement roadmap: [roadmap/blueprint-improvement.md](roadmap/blueprint-improvement.md)
@@ -178,7 +179,7 @@ Important:
 Notes:
 
 - These commands detect existing Terraform state and will ask before destroying anything.
-- A backup hook runs first (currently a stub): `scripts/hooks/backup.sh`.
+- A backup hook runs first before destructive redeploys: `scripts/hooks/backup.sh`.
 - If the control VM is corrupted/destroyed, you can recreate it and restore Headscale from backup. See the control recovery section in [technical/OPERATIONS.md](technical/OPERATIONS.md).
 
 ### Joining your deploy machine to the tailnet

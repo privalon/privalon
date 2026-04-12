@@ -32,9 +32,11 @@ person following the runbook --- with or without AI assistance.
 
 The blueprint currently handles provisioning and basic VM configuration
 on ThreeFold Grid. The core architecture decisions (mesh VPN, no public
-SSH, reverse proxy) are in place but partially implemented. Hetzner
-support is not yet added. The structure is not yet modular enough for
-community contribution.
+SSH, reverse proxy, backup/recovery, and observability) are implemented
+in the current baseline. Hetzner support is still future work. This
+document should be treated as a forward-looking roadmap, while current
+shipped behavior is documented in technical architecture and operations
+docs plus the changelog.
 
 **1.2 Required Improvements**
 
@@ -537,11 +539,11 @@ based on what blocks what.
   ----------- --------------- ---------------------------------- ---------------
 
 +-----------------------------------------------------------------------+
-| **NLnet application timing**                                          |
+| **Public release timing**                                             |
 |                                                                       |
-| Apply to NLnet (April 1 deadline) after Phase 1 is complete. You will |
-| have a working, public GitHub repo with real security hardening ---   |
-| that is all they need to see. Do not wait for Phase 6.                |
+| Publish the roadmap update after Phase 1 is complete. You will have a |
+| working, public GitHub repo with real security hardening and clear    |
+| verification evidence. Do not wait for Phase 6 to publish progress.   |
 +-----------------------------------------------------------------------+
 
 *End of Document*

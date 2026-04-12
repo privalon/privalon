@@ -74,6 +74,7 @@ If you enable `public_service_tls_mode: namecheap` or `internal_service_tls_mode
 - Architecture: [docs/technical/ARCHITECTURE.md](docs/technical/ARCHITECTURE.md)
 - Operations runbook: [docs/technical/OPERATIONS.md](docs/technical/OPERATIONS.md)
 - Roadmap / design notes: [docs/roadmap/blueprint-improvement.md](docs/roadmap/blueprint-improvement.md)
+- Published delivery milestones: [docs/roadmap/DELIVERY-MILESTONES.md](docs/roadmap/DELIVERY-MILESTONES.md)
 - Internal service template + Vaultwarden design spec: [docs/roadmap/service-template-and-vaultwarden.md](docs/roadmap/service-template-and-vaultwarden.md)
 - Portable recovery bundle and restore spec: [docs/roadmap/portable-recovery-bundle-and-restore.md](docs/roadmap/portable-recovery-bundle-and-restore.md)
 - Logging and service observability: [docs/technical/ARCHITECTURE.md](docs/technical/ARCHITECTURE.md) + [docs/technical/OPERATIONS.md](docs/technical/OPERATIONS.md)
