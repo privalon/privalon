@@ -1,7 +1,5 @@
 # Backup Architecture
 
-March 2026 · v1.5
-
 **Status**: Implemented and verified
 
 ---
@@ -224,11 +222,11 @@ backup:
   targets:
     - name: "state"
       type: "directory"
-      path: "/var/lib/headscale"
+      path: "/opt/headscale/data"
       description: "Headscale database and state"
     - name: "config"
       type: "directory"
-      path: "/etc/headscale"
+      path: "/opt/headscale/config"
       description: "Headscale configuration"
     - name: "caddy-data"
       type: "directory"
@@ -240,11 +238,11 @@ backup:
       description: "Headplane configuration and secrets"
   pre_backup:
     - name: "sqlite-backup"
-      command: "docker exec headscale sqlite3 /var/lib/headscale/db.sqlite3 '.backup /var/lib/headscale/db-backup.sqlite3'"
-      description: "Create consistent SQLite dump"
+      command: "sqlite3 /opt/headscale/data/db.sqlite3 '.backup /opt/headscale/data/db-backup.sqlite3'"
+      description: "Create consistent SQLite dump via host sqlite3"
   post_backup:
     - name: "cleanup-dump"
-      command: "rm -f /var/lib/headscale/db-backup.sqlite3"
+      command: "rm -f /opt/headscale/data/db-backup.sqlite3"
   restore_verify:
     command: "docker exec headscale headscale version"
     description: "Verify Headscale starts with restored data"

@@ -1,5 +1,7 @@
 # Privalon
 
+[![CI](https://github.com/clarionis-data/generic-blueprint/actions/workflows/ci.yml/badge.svg)](https://github.com/clarionis-data/generic-blueprint/actions/workflows/ci.yml)
+
 Infrastructure blueprint (Terraform + Ansible) for a small multi-VM setup on the ThreeFold Grid, using Headscale/Tailscale for private access.
 
 Current release: see [VERSION](VERSION) (history in [CHANGELOG.md](CHANGELOG.md)).
@@ -76,18 +78,8 @@ If you enable `public_service_tls_mode: namecheap` or `internal_service_tls_mode
 - Roadmap / design notes: [docs/roadmap/blueprint-improvement.md](docs/roadmap/blueprint-improvement.md)
 - Published delivery milestones: [docs/roadmap/DELIVERY-MILESTONES.md](docs/roadmap/DELIVERY-MILESTONES.md)
 - Internal service template + Vaultwarden design spec: [docs/roadmap/service-template-and-vaultwarden.md](docs/roadmap/service-template-and-vaultwarden.md)
-- Portable recovery bundle and restore spec: [docs/roadmap/portable-recovery-bundle-and-restore.md](docs/roadmap/portable-recovery-bundle-and-restore.md)
-- Logging and service observability: [docs/technical/ARCHITECTURE.md](docs/technical/ARCHITECTURE.md) + [docs/technical/OPERATIONS.md](docs/technical/OPERATIONS.md)
-
-Terminal-driven deploys launched through `./scripts/deploy.sh ...` are recorded automatically into `environments/<env>/.ui-logs/` so the local Web UI History tab can replay them later. UI-triggered deploys now also store an immutable per-job snapshot of `scripts/deploy.sh` in that same log directory before launch, preserve the original repo root when executing that snapshot, and therefore avoid both mid-run script edits and path-resolution regressions while the job is still running. The Web UI Deploy tab now combines the emitted deploy plan, correctly counted `ansible-playbook --list-tasks` output, live Ansible task markers, and an environment-local timing profile rebuilt from successful prior jobs. That lets the top-level progress bar and ETA learn real step durations over time, remain resilient as the blueprint expands, and adapt mid-run when a step is overrunning its historical average. Real-domain environments also auto-enable Let's Encrypt for Headscale again by default, while `join-local` now installs the persisted internal Headscale CA into the macOS System keychain when internal TLS is intentionally used.
-
-Job logs now also contain machine-readable progress diagnostics for post-run estimation analysis: deploy-side `[bp-progress]` markers include timestamps and elapsed timing, and UI-triggered runs append throttled `[bp-progress-ui]` estimator snapshots with the visible percent/ETA/label state back into the same persisted log.
-
-Tailnet identity is preserved by default on redeploys: Headscale restores its node database and each VM restores `/var/lib/tailscale` so existing node registrations survive routine rebuilds. Use `./scripts/deploy.sh ... --fresh-tailnet` only when you explicitly want a destructive tailnet reset.
-
-When `--fresh-tailnet` is used, the deployment summary now includes client reset instructions that prefer `./scripts/deploy.sh join-local --env <env> --rejoin-local`, so laptops and other user devices rejoin through the hostname-sanitizing helper before falling back to a manual `tailscale logout` plus `tailscale up --force-reauth --hostname ...` flow.
-
-When `backup_enabled: true` and two backup backends are configured, the deployment summary also prints a single opaque break-glass recovery line and stores the latest generated copy locally in `environments/<env>/.recovery/latest-recovery-line`. Restore from a fresh macOS or Linux machine with `./scripts/restore.sh --recovery-line '<opaque-line>'`.
+- Portable recovery bundle and restore: [docs/technical/ARCHITECTURE.md](docs/technical/ARCHITECTURE.md#control-plane-recovery-bundle) + [docs/technical/OPERATIONS.md](docs/technical/OPERATIONS.md#portable-recovery-bundle-and-restore)
+- Logging and service observability: [docs/technical/ARCHITECTURE.md](docs/technical/ARCHITECTURE.md#observability-architecture) + [docs/technical/OPERATIONS.md](docs/technical/OPERATIONS.md#service-observability)
 
 ## AI-assisted contributions
 

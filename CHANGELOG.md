@@ -17,6 +17,10 @@ The format is based on Keep a Changelog, and this repository now follows Semanti
 ### Documentation
 - Added `docs/roadmap/service-template-and-vaultwarden.md`, a technical design spec for a dedicated tailnet-only Vaultwarden VM plus a reusable internal-service onboarding template covering DNS, internal TLS, backups, logs, monitoring, deployment summary integration, and verification expectations.
 - **`README.md`** + **`docs/README.md`** + **`docs/roadmap/blueprint-improvement.md`** + **`docs/technical/BACKUP.md`**: Added the public delivery milestones link and cleaned stale maturity wording/checklist status so published docs better match shipped behavior.
+- **`README.md`**: Removed five stale changelog-style paragraphs that duplicated content already covered in the Security model section and dedicated docs; fixed broken link to the deleted `docs/roadmap/portable-recovery-bundle-and-restore.md` to point at the live `ARCHITECTURE.md` and `OPERATIONS.md` anchors instead; added section anchors to the observability links.
+- **`docs/technical/ARCHITECTURE.md`**: Updated the "Backup Requirements" section to replace stale bare paths (`/var/lib/headscale`, `/etc/headscale`, `/etc/caddy`) with a table of the actual deployed host paths matching the Ansible backup manifests, and added a reference to `BACKUP.md` for the full specification.
+- **`docs/technical/BACKUP.md`**: Removed the stale `March 2026 · v1.5` version header; corrected the Headscale "Existing Service Manifest" example to match the actual role (`/opt/headscale/data`, `/opt/headscale/config`, host `sqlite3` instead of `docker exec headscale sqlite3`).
+- **`docs/technical/OPERATIONS.md`**: Fixed typo `print_vaultden()` → `print_vaultwarden()` in the deployment-summary extension guidance.
 
 ## [1.13.39] — 2026-04-11
 

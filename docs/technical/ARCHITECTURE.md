@@ -597,16 +597,17 @@ Output:
 
 # Backup Requirements
 
-Back up:
+The blueprint uses Restic with dual S3-compatible backends for encrypted, deduplicated backups. See [BACKUP.md](BACKUP.md) for the full specification.
 
-```
-/var/lib/headscale
-/etc/headscale
-/etc/caddy (or nginx)
-/etc/tailscale
-```
+Key host paths backed up per VM:
 
-Store encrypted backup offsite.
+| VM | Paths |
+|-----|-------|
+| Control | `/opt/headscale/data/`, `/opt/headscale/config/`, `/opt/headplane/`, `/opt/caddy/data/` |
+| Gateway | `/opt/caddy/data/`, `/opt/caddy/config/` |
+| All VMs | `/var/lib/tailscale` (per-host repo) |
+
+Store the Restic master password and S3 credentials offline; see the Owner Recovery Card template in [BACKUP.md](BACKUP.md#12-owner-recovery-card).
 
 ## Control-Plane Recovery Bundle
 

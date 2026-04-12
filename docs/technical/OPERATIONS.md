@@ -173,7 +173,7 @@ If you need to see the summary again after deployment, or if you want to refresh
 If you add a new service (e.g., VaultWarden), the minimal changes are:
 
 - **deployment-summary.sh**: Add a `print_subsection` for it in `print_services()` function
-- **docs/technical/OPERATIONS.md**: Document the expected `print_vaultden()` section
+- **docs/technical/OPERATIONS.md**: Document the expected `print_vaultwarden()` section
 - **ansible role**: Ensure the service's IP/port are stored in Terraform outputs or dynamic inventory
 
 This ensures:
