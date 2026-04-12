@@ -1,0 +1,252 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    {
+      "title": "Infrastructure Health",
+      "type": "dashboards",
+      "uid": "server-health-basic"
+    },
+    {
+      "title": "Service Health",
+      "type": "dashboards",
+      "uid": "service-health"
+    }
+  ],
+  "panels": [
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "targets": [
+        {
+          "expr": "sum by (service) (count_over_time({env=~\"$env\",node=~\"$node\",role=~\"$role\",service=~\"$service\"}[$__interval]))",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Log volume by service",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "id": 2,
+      "targets": [
+        {
+          "expr": "sum by (service) (count_over_time({env=~\"$env\",node=~\"$node\",role=~\"$role\",service=~\"$service\"} |= \"error\" != \"level=info\" != \"level=debug\" != \"level=trace\" [$__range]))",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Recent error count by service",
+      "type": "barchart"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "id": 3,
+      "options": {
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "expr": "topk(10, sum by (service) (count_over_time({env=~\"$env\",node=~\"$node\",role=~\"$role\",service=~\"$service\"}[1h])))",
+          "queryType": "instant",
+          "refId": "A"
+        },
+        {
+          "expr": "topk(10, sum by (service) (count_over_time({env=~\"$env\",node=~\"$node\",role=~\"$role\",service=~\"$service\"}[24h])))",
+          "queryType": "instant",
+          "refId": "B"
+        }
+      ],
+      "title": "Top noisy services in the last 1h / 24h",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "id": 4,
+      "options": {
+        "dedupStrategy": "none",
+        "showCommonLabels": false,
+        "showLabels": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": false
+      },
+      "targets": [
+        {
+          "expr": "{env=~\"$env\",node=~\"$node\",role=~\"$role\",service=~\"$service\"} |= \"error\" != \"level=info\" != \"level=debug\" != \"level=trace\"",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Latest critical log lines",
+      "type": "logs"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 16
+      },
+      "id": 5,
+      "options": {
+        "dedupStrategy": "none",
+        "showCommonLabels": false,
+        "showLabels": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": false
+      },
+      "targets": [
+        {
+          "expr": "{env=~\"$env\",service=\"backup\"} |= \"fail\"",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Backup log failures",
+      "type": "logs"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": [
+    "logs",
+    "observability"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": ".*"
+        },
+        "definition": "label_values({service=~\".+\"}, env)",
+        "includeAll": true,
+        "multi": false,
+        "name": "env",
+        "query": {
+          "query": "label_values({service=~\".+\"}, env)",
+          "refId": "A"
+        },
+        "refresh": 1,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": ".*"
+        },
+        "definition": "label_values({env=~\"$env\"}, node)",
+        "includeAll": true,
+        "multi": false,
+        "name": "node",
+        "query": {
+          "query": "label_values({env=~\"$env\"}, node)",
+          "refId": "B"
+        },
+        "refresh": 1,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": ".*"
+        },
+        "definition": "label_values({env=~\"$env\",node=~\"$node\"}, role)",
+        "includeAll": true,
+        "multi": false,
+        "name": "role",
+        "query": {
+          "query": "label_values({env=~\"$env\",node=~\"$node\"}, role)",
+          "refId": "C"
+        },
+        "refresh": 1,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": ".*"
+        },
+        "definition": "label_values({env=~\"$env\",node=~\"$node\",role=~\"$role\"}, service)",
+        "includeAll": true,
+        "multi": false,
+        "name": "service",
+        "query": {
+          "query": "label_values({env=~\"$env\",node=~\"$node\",role=~\"$role\"}, service)",
+          "refId": "D"
+        },
+        "refresh": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "title": "Logs Overview",
+  "uid": "logs-overview",
+  "version": 1
+}

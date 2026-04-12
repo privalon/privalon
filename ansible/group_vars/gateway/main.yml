@@ -1,0 +1,16 @@
+---
+# Gateway is the public edge + optional exit node.
+
+tailscale_advertise_exit_node: true
+
+# Preferred public routing schema.
+# gateway_services:
+#   - name: app
+#     upstream_host: app-vm
+#     upstream_port: 3000
+#
+# Backward-compatible legacy schema.
+# gateway_domains:
+#   - "example.com"
+# gateway_upstream_host: app-vm
+# gateway_upstream_port: 80

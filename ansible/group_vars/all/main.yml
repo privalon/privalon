@@ -1,0 +1,81 @@
+---
+# Global defaults for this blueprint.
+
+# Admin email — used for Let's Encrypt cert expiry warnings and future services.
+admin_email: ""
+
+# Headscale public URL (MUST be reachable from all VMs + your devices, and must match TLS cert).
+# Example:
+#   headscale_url: "https://headscale.example.com"
+# By default, the dynamic inventory sets this automatically to:
+#   https://<control_public_ip>.sslip.io
+# You can override it here if you have a real DNS name.
+
+# Default to internal TLS for blueprint/dev workflows.
+# When base_domain is set, the playbook auto-switches to letsencrypt unless
+# headscale_tls_mode_auto is disabled for an environment.
+# Using letsencrypt with sslip.io/IP-based URLs is unreliable and will break tailnet joins.
+headscale_tls_mode: internal
+headscale_tls_mode_auto: true
+headscale_acme_email: "{{ admin_email | default('') }}"
+
+# Tailnet-only service aliases (grafana/prometheus/backrest on MagicDNS) can use either:
+# - internal:  monitoring VM Caddy issues a private CA; clients must trust it manually
+# - namecheap: gateway VM Caddy obtains a wildcard public cert for
+#              *.headscale_magic_dns_base_domain via Namecheap DNS-01 and proxies
+#              the private services over Tailscale
+public_service_tls_mode: letsencrypt
+internal_service_tls_mode: internal
+internal_service_tls_namecheap_plugin_version: "v1.0.0"
+internal_service_tls_namecheap_client_ip: ""
+internal_service_tls_namecheap_resolvers:
+  - "1.1.1.1"
+  - "1.0.0.1"
+internal_service_tls_namecheap_propagation_delay: "2m"
+internal_service_tls_namecheap_propagation_timeout: "10m"
+
+# Shared admin credentials for internal services (Grafana, Prometheus, Backrest).
+# Set SERVICES_ADMIN_PASSWORD in secrets.env; change per-service after first login.
+services_admin_username: admin
+services_admin_password: "{{ lookup('env', 'SERVICES_ADMIN_PASSWORD') | default('change-me', true) }}"
+
+# Grafana-specific aliases (wired to the shared credentials above).
+grafana_admin_user: "{{ services_admin_username }}"
+grafana_admin_password: "{{ services_admin_password }}"
+
+# Firewall recovery safety net (optional)
+# By default, the firewall role blocks public SSH and only allows SSH on `tailscale0`.
+# If you want a temporary recovery path during initial bootstrap, allow SSH only from
+# your workstation public IP/CIDR, e.g.:
+# firewall_allow_public_ssh_from_cidrs:
+#   - "203.0.113.10/32"
+# After the tailnet is stable, set this back to [] and re-run the firewall role.
+firewall_allow_public_ssh_from_cidrs: []
+
+# ── Observability configuration ──
+logging_enabled: true
+logging_loki_retention_days: 30
+logging_loki_query_split_interval: 2h
+logging_loki_frontend_max_outstanding_per_tenant: 2048
+logging_loki_scheduler_max_outstanding_requests_per_tenant: 4096
+logging_loki_querier_max_concurrent: 8
+logging_archive_retention_days: 90
+logging_archive_enabled: "{{ (backup_backends | default([]) | length) > 0 }}"
+logging_archive_backend_name: primary
+logging_archive_prefix: "logs/{{ blueprint_env }}"
+
+service_observability_enabled: true
+service_health_checks_enabled: true
+service_log_collection_enabled: true
+observability_alloy_listen_port: 12345
+observability_health_check_interval_seconds: 60
+observability_textfile_dir: /var/lib/node_exporter/textfile
+
+# ── Backup configuration ──
+# Enable/disable backup system globally.
+# Set to false to skip all backup tasks (useful for dev/test without S3).
+backup_enabled: false
+
+# Environment name — set by deploy.sh via --env flag.
+# Used as S3 path prefix to isolate environments.
+blueprint_env: "{{ lookup('env', 'BLUEPRINT_ENV') | default('prod', true) }}"

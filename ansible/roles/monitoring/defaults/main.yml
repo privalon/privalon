@@ -1,0 +1,16 @@
+---
+# Aliases — canonical source is services_admin_{username,password} in group_vars.
+grafana_admin_user: "{{ services_admin_username | default('admin') }}"
+grafana_admin_password: "{{ services_admin_password | default('change-me') }}"
+
+# Services watched by Backrest (one repo per backend per service).
+backrest_watched_services:
+  - headscale
+  - gateway
+  - monitoring
+
+# Loki query-path tuning (overridden in group_vars/all).
+logging_loki_query_split_interval: 2h
+logging_loki_frontend_max_outstanding_per_tenant: 2048
+logging_loki_scheduler_max_outstanding_requests_per_tenant: 4096
+logging_loki_querier_max_concurrent: 8

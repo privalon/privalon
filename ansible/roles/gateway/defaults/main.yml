@@ -1,0 +1,15 @@
+---
+# Caddy reverse proxy configuration on the gateway.
+# Provide real domains pointing to the gateway public IPv4.
+
+# Preferred public routing schema: one service entry per public hostname.
+# Each entry derives <name>.<base_domain> unless name is already a full hostname.
+gateway_services: []
+
+# Backward-compatible legacy schema: all gateway_domains share one upstream.
+gateway_domains: []
+gateway_upstream_host: app-vm
+gateway_upstream_port: 80
+
+# Enable IP forwarding + NAT for exit-node functionality (required for full-tunnel VPN)
+gateway_enable_exit_node_nat: true

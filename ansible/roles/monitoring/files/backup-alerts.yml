@@ -1,0 +1,40 @@
+groups:
+  - name: backup
+    rules:
+      - alert: BackupFailed
+        expr: backup_last_status == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Backup failed for {{ $labels.service }} ({{ $labels.env }})"
+          description: "The last backup run for {{ $labels.service }} in {{ $labels.env }} failed."
+
+      - alert: BackupStale
+        expr: time() - backup_last_success_timestamp > 90000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No successful backup in 25h for {{ $labels.service }} ({{ $labels.env }})"
+          description: "Service {{ $labels.service }} in {{ $labels.env }} has not had a successful backup in over 25 hours."
+
+      - alert: BackupSizeAnomaly
+        expr: |
+          backup_last_size_bytes / backup_last_size_bytes offset 1d > 3
+          or backup_last_size_bytes / backup_last_size_bytes offset 1d < 0.3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Backup size changed >3x for {{ $labels.service }} ({{ $labels.env }})"
+          description: "Backup size for {{ $labels.service }} in {{ $labels.env }} changed more than 3x compared to yesterday."
+
+      - alert: BackupDrillFailed
+        expr: backup_drill_last_status == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Backup restore drill failed for {{ $labels.service }} ({{ $labels.env }})"
+          description: "The weekly backup integrity check or restore drill failed for {{ $labels.service }}."

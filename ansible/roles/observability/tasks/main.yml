@@ -1,0 +1,258 @@
+---
+- name: Skip observability role when fully disabled
+  ansible.builtin.meta: end_host
+  when:
+    - not (logging_enabled | default(true) | bool)
+    - not (service_observability_enabled | default(true) | bool)
+
+- name: Determine local Tailscale IPv4 (fallback when tailscale role facts are unavailable)
+  ansible.builtin.command:
+    argv: ["tailscale", "ip", "-4"]
+  register: observability_tailscale_ip_cmd
+  changed_when: false
+  failed_when: false
+
+- name: Set tailscale_ip fact from local command when missing
+  ansible.builtin.set_fact:
+    tailscale_ip: "{{ (observability_tailscale_ip_cmd.stdout_lines | default([]) | first | default('')) | trim }}"
+  when: (tailscale_ip | default('') | trim) == ''
+
+- name: Fail if tailscale_ip is not available
+  ansible.builtin.fail:
+    msg: tailscale_ip is empty; ensure the tailscale role ran successfully first.
+  when:
+    - (logging_enabled | default(true) | bool) or (service_observability_enabled | default(true) | bool)
+    - (tailscale_ip | default('') | trim) == ''
+
+- name: Install Docker (Debian/Ubuntu)
+  ansible.builtin.apt:
+    name:
+      - docker.io
+    state: present
+    update_cache: true
+  when:
+    - ansible_facts.os_family == 'Debian'
+    - logging_enabled | default(true)
+    - service_log_collection_enabled | default(true)
+
+- name: Ensure dockerd is running (zinit)
+  ansible.builtin.copy:
+    dest: /etc/zinit/dockerd.yaml
+    mode: "0644"
+    content: |
+      exec: dockerd -H unix:///var/run/docker.sock
+  when:
+    - ansible_facts.os_family == 'Debian'
+    - logging_enabled | default(true)
+    - service_log_collection_enabled | default(true)
+
+- name: Start dockerd (zinit)
+  ansible.builtin.command:
+    argv: ["zinit", "monitor", "dockerd"]
+  register: observability_dockerd_zinit
+  changed_when: observability_dockerd_zinit.rc == 0
+  failed_when: false
+  when:
+    - ansible_facts.os_family == 'Debian'
+    - logging_enabled | default(true)
+    - service_log_collection_enabled | default(true)
+
+- name: Wait for Docker socket
+  ansible.builtin.wait_for:
+    path: /var/run/docker.sock
+    timeout: 60
+  when:
+    - ansible_facts.os_family == 'Debian'
+    - logging_enabled | default(true)
+    - service_log_collection_enabled | default(true)
+
+- name: Load tailscale IP map from local inventory (for partial / --limit runs)
+  ansible.builtin.shell:
+    cmd: "cat \"${TAILSCALE_IPS_JSON}\" 2>/dev/null || echo '{}'"
+  register: _observability_ts_ips_raw
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  failed_when: false
+
+- name: Set observability tailscale IP map fact from inventory JSON
+  ansible.builtin.set_fact:
+    observability_tailscale_ip_map: "{{ _observability_ts_ips_raw.stdout | default('{}') | from_json }}"
+
+- name: Find observability manifest files
+  ansible.builtin.find:
+    paths: "{{ role_path }}/../"
+    patterns: observability.yml
+    recurse: true
+    file_type: file
+  delegate_to: localhost
+  become: false
+  register: _observability_manifest_files
+
+- name: Discover observability manifests from roles
+  ansible.builtin.include_vars:
+    file: "{{ item.path }}"
+    name: "_observability_manifest_{{ idx }}"
+  loop: "{{ _observability_manifest_files.files | default([]) }}"
+  loop_control:
+    index_var: idx
+    label: "{{ item.path | basename }}"
+  when: item.path is search('/defaults/observability.yml$')
+  register: _observability_manifests_raw
+
+- name: Build observability manifest catalog
+  ansible.builtin.set_fact:
+    observability_services_catalog: >-
+      {{
+        _observability_manifests_raw.results
+        | default([])
+        | selectattr('ansible_facts', 'defined')
+        | map(attribute='ansible_facts')
+        | map('dict2items')
+        | map('first')
+        | map(attribute='value')
+        | map(attribute='observability')
+        | map(attribute='services')
+        | sum(start=[])
+      }}
+
+- name: Initialize filtered observability service list
+  ansible.builtin.set_fact:
+    observability_host_services: []
+
+- name: Filter observability services for this host
+  ansible.builtin.set_fact:
+    observability_host_services: "{{ observability_host_services + [item] }}"
+  loop: "{{ observability_services_catalog | default([]) }}"
+  when:
+    - (item.enabled_var | default('') | trim) == '' or (vars[item.enabled_var] | default(false) | bool)
+    - (item.host_groups | default([]) | length) == 0 or (item.host_groups | intersect(group_names) | length) > 0
+
+- name: Derive Loki write URL from monitoring node Tailscale IP
+  ansible.builtin.set_fact:
+    observability_loki_write_url: >-
+      http://{{ hostvars['monitoring-vm']['tailscale_ip'] | default(observability_tailscale_ip_map.get('monitoring-vm', '')) }}:3100/loki/api/v1/push
+  when:
+    - logging_enabled | default(true)
+    - service_log_collection_enabled | default(true)
+
+- name: Fail if Loki write URL cannot be derived
+  ansible.builtin.fail:
+    msg: monitoring-vm tailscale_ip is empty; cannot configure Alloy log shipping.
+  when:
+    - logging_enabled | default(true)
+    - service_log_collection_enabled | default(true)
+    - observability_loki_write_url is not defined or (observability_loki_write_url | trim) == 'http://:3100/loki/api/v1/push'
+
+- name: Create observability directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - /opt/observability
+    - /opt/observability/alloy
+    - /opt/observability/alloy/data
+    - /opt/observability/scripts
+  when: logging_enabled | default(true) or service_health_checks_enabled | default(true)
+
+- name: Render local service health runner
+  ansible.builtin.template:
+    src: service-health.sh.j2
+    dest: "{{ observability_health_script_path }}"
+    mode: "0755"
+  when:
+    - service_observability_enabled | default(true)
+    - service_health_checks_enabled | default(true)
+
+- name: Install zinit config for local service health runner
+  ansible.builtin.copy:
+    dest: "/etc/zinit/{{ observability_health_runner_name }}.yaml"
+    mode: "0644"
+    content: |
+      exec: /bin/bash -lc 'while true; do {{ observability_health_script_path }}; sleep {{ observability_health_check_interval_seconds }}; done'
+  register: observability_health_zinit_config
+  when:
+    - service_observability_enabled | default(true)
+    - service_health_checks_enabled | default(true)
+
+- name: Start local service health runner (zinit)
+  ansible.builtin.command:
+    argv: ["zinit", "monitor", "{{ observability_health_runner_name }}"]
+  register: observability_health_zinit_monitor
+  changed_when: observability_health_zinit_monitor.rc == 0
+  failed_when: false
+  when:
+    - service_observability_enabled | default(true)
+    - service_health_checks_enabled | default(true)
+
+- name: Restart local service health runner on config change
+  ansible.builtin.shell: |
+    timeout 15 zinit stop {{ observability_health_runner_name }} 2>/dev/null || true
+    sleep 1
+    zinit forget {{ observability_health_runner_name }} 2>/dev/null || true
+    zinit monitor {{ observability_health_runner_name }}
+  args:
+    executable: /bin/bash
+  when:
+    - service_observability_enabled | default(true)
+    - service_health_checks_enabled | default(true)
+    - observability_health_zinit_config is changed
+
+- name: Run local service health runner once immediately
+  ansible.builtin.command:
+    argv: ["{{ observability_health_script_path }}"]
+  changed_when: false
+  when:
+    - service_observability_enabled | default(true)
+    - service_health_checks_enabled | default(true)
+
+- name: Render Alloy config
+  ansible.builtin.template:
+    src: config.alloy.j2
+    dest: /opt/observability/alloy/config.alloy
+    mode: "0644"
+  when:
+    - logging_enabled | default(true)
+    - service_log_collection_enabled | default(true)
+
+- name: Remove existing Alloy container (if any)
+  ansible.builtin.command:
+    argv: ["docker", "rm", "-f", "alloy"]
+  register: observability_alloy_rm
+  changed_when: observability_alloy_rm.rc == 0
+  failed_when: false
+  when:
+    - logging_enabled | default(true)
+    - service_log_collection_enabled | default(true)
+
+- name: Run Alloy (tailnet-only metrics, Loki log shipping)
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - -d
+      - --name
+      - alloy
+      - --restart
+      - unless-stopped
+      - --network
+      - host
+      - -v
+      - /var/run/docker.sock:/var/run/docker.sock
+      - -v
+      - /var/log:/var/log:ro
+      - -v
+      - /opt/observability/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - -v
+      - /opt/observability/alloy/data:/var/lib/alloy
+      - "{{ observability_alloy_image }}"
+      - run
+      - --storage.path=/var/lib/alloy
+      - --server.http.listen-addr={{ tailscale_ip }}:{{ observability_alloy_listen_port }}
+      - /etc/alloy/config.alloy
+  register: observability_alloy_run
+  changed_when: observability_alloy_run.rc == 0
+  when:
+    - logging_enabled | default(true)
+    - service_log_collection_enabled | default(true)

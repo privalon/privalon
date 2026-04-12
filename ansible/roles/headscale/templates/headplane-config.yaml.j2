@@ -1,0 +1,11 @@
+debug: false
+
+server:
+  host: "{{ headplane_server_host }}"
+  port: {{ headplane_listen_port }}
+  cookie_secret: "{{ headplane_cookie_secret_effective }}"
+
+headscale:
+  url: "{{ headscale_url }}"
+  config_path: "/etc/headscale/config.yaml"
+  config_strict: false

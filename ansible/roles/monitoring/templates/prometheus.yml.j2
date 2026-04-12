@@ -1,0 +1,149 @@
+global:
+  scrape_interval: 15s
+
+rule_files:
+  - /etc/prometheus/backup-alerts.yml
+  - /etc/prometheus/service-observability-alerts.yml
+
+scrape_configs:
+  - job_name: node
+    static_configs:
+{% set ts_map = prometheus_tailscale_ip_map | default({}) %}
+{% set magic_dns_base = headscale_magic_dns_base_domain | default('') | trim %}
+{% for h in groups['all'] | default([]) %}
+{# Precedence: tailscale_ip fact (set by tailscale role) → JSON inventory → ansible_host (when PREFER_TAILSCALE=1) #}
+{% set ip = hostvars[h].tailscale_ip | default(ts_map.get(h, hostvars[h].ansible_host | default(''))) %}
+{% set node_name = h | lower | regex_replace('[^a-z0-9-]', '-') | regex_replace('-+', '-') | regex_replace('^-|-$', '') %}
+{% if ip | trim != '' and ip is match('^100\\.64\\.') %}
+      - targets:
+          - "{{ ip }}:9100"
+        labels:
+          env: "{{ blueprint_env | default('prod') }}"
+          node: "{{ h }}"
+          role: "{{ ((hostvars[h].group_names | default([])) | reject('equalto', 'all') | reject('equalto', 'ungrouped') | list | first | default('all')) }}"
+          node_name: "{{ node_name }}"
+          node_display_name: "{{ node_name ~ '.' ~ magic_dns_base if magic_dns_base != '' else node_name }}"
+{% endif %}
+{% endfor %}
+
+  - job_name: alloy
+    static_configs:
+{% for h in groups['all'] | default([]) %}
+{% set ip = hostvars[h].tailscale_ip | default(ts_map.get(h, hostvars[h].ansible_host | default(''))) %}
+{% set node_name = h | lower | regex_replace('[^a-z0-9-]', '-') | regex_replace('-+', '-') | regex_replace('^-|-$', '') %}
+{% if ip | trim != '' and ip is match('^100\.64\.') %}
+      - targets:
+          - "{{ ip }}:{{ observability_alloy_listen_port }}"
+        labels:
+          env: "{{ blueprint_env | default('prod') }}"
+          node: "{{ h }}"
+          role: "{{ ((hostvars[h].group_names | default([])) | reject('equalto', 'all') | reject('equalto', 'ungrouped') | list | first | default('all')) }}"
+          node_name: "{{ node_name }}"
+          node_display_name: "{{ node_name ~ '.' ~ magic_dns_base if magic_dns_base != '' else node_name }}"
+{% endif %}
+{% endfor %}
+
+  - job_name: blackbox
+    static_configs:
+      - targets:
+          - "{{ tailscale_ip }}:9115"
+        labels:
+          env: "{{ blueprint_env | default('prod') }}"
+          node: monitoring-vm
+          role: monitoring
+
+  - job_name: service_probe_http
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+{% for service in prometheus_observability_catalog | default([]) %}
+{% set enabled = (service.enabled_var is not defined) or (service.enabled_var | trim == '') or (vars[service.enabled_var] | default(false) | bool) %}
+{% if enabled %}
+{% for host_group in service.host_groups | default(['all']) %}
+{% for h in groups[host_group] | default([]) %}
+{% set ip = hostvars[h].tailscale_ip | default(ts_map.get(h, hostvars[h].ansible_host | default(''))) %}
+{% for check in service.health_checks.remote | default([]) %}
+{% if check.type == 'http' %}
+{% if check.target == 'tailscale_self' and ip | trim != '' %}
+      - targets:
+          - "http://{{ ip }}:{{ check.port }}{{ check.path | default('/') }}"
+        labels:
+          env: "{{ blueprint_env | default('prod') }}"
+          node: "{{ h }}"
+          role: "{{ service.role_label | default(host_group) }}"
+          service: "{{ service.service_name }}"
+          check: "{{ check.name }}"
+          probe_type: http
+{% elif check.target == 'headscale_url' and (headscale_url | default('') | trim) != '' %}
+      - targets:
+          - "{{ headscale_url }}{{ check.path | default('/') }}"
+        labels:
+          env: "{{ blueprint_env | default('prod') }}"
+          node: "{{ h }}"
+          role: "{{ service.role_label | default(host_group) }}"
+          service: "{{ service.service_name }}"
+          check: "{{ check.name }}"
+          probe_type: http
+{% endif %}
+{% endif %}
+{% endfor %}
+{% endfor %}
+{% endfor %}
+{% endif %}
+{% endfor %}
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: "{{ tailscale_ip }}:9115"
+
+  - job_name: service_probe_tcp
+    metrics_path: /probe
+    params:
+      module: [tcp_connect]
+    static_configs:
+{% for service in prometheus_observability_catalog | default([]) %}
+{% set enabled = (service.enabled_var is not defined) or (service.enabled_var | trim == '') or (vars[service.enabled_var] | default(false) | bool) %}
+{% if enabled %}
+{% for host_group in service.host_groups | default(['all']) %}
+{% for h in groups[host_group] | default([]) %}
+{% set ip = hostvars[h].tailscale_ip | default(ts_map.get(h, hostvars[h].ansible_host | default(''))) %}
+{% for check in service.health_checks.remote | default([]) %}
+{% if check.type == 'tcp' %}
+{% if check.target == 'tailscale_self' and ip | trim != '' %}
+      - targets:
+          - "{{ ip }}:{{ check.port }}"
+        labels:
+          env: "{{ blueprint_env | default('prod') }}"
+          node: "{{ h }}"
+          role: "{{ service.role_label | default(host_group) }}"
+          service: "{{ service.service_name }}"
+          check: "{{ check.name }}"
+          probe_type: tcp
+{% elif check.target == 'gateway_public_ip' and (hostvars[h].tf_public_ip | default(hostvars[h].ansible_host | default('')) | trim) != '' %}
+      - targets:
+          - "{{ hostvars[h].tf_public_ip | default(hostvars[h].ansible_host | default('')) }}:{{ check.port }}"
+        labels:
+          env: "{{ blueprint_env | default('prod') }}"
+          node: "{{ h }}"
+          role: "{{ service.role_label | default(host_group) }}"
+          service: "{{ service.service_name }}"
+          check: "{{ check.name }}"
+          probe_type: tcp
+{% endif %}
+{% endif %}
+{% endfor %}
+{% endfor %}
+{% endfor %}
+{% endif %}
+{% endfor %}
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: "{{ tailscale_ip }}:9115"

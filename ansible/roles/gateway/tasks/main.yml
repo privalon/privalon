@@ -1,0 +1,424 @@
+---
+- name: Attempt restore from backup (gateway)
+  ansible.builtin.include_role:
+    name: backup
+    tasks_from: restore
+  vars:
+    backup_service_name: "gateway"
+  when: backup_restore_enabled | default(true)
+
+- name: Determine local Tailscale IPv4 (fallback when tailscale role facts are unavailable)
+  ansible.builtin.command:
+    argv: ["tailscale", "ip", "-4"]
+  register: gateway_tailscale_ip_cmd
+  changed_when: false
+  failed_when: false
+
+- name: Set tailscale_ip fact from local command when missing
+  ansible.builtin.set_fact:
+    tailscale_ip: "{{ (gateway_tailscale_ip_cmd.stdout_lines | default([]) | first | default('')) | trim }}"
+  when: (tailscale_ip | default('') | trim) == ''
+
+- name: Fail if tailscale_ip is not available
+  ansible.builtin.fail:
+    msg: "tailscale_ip is empty; ensure the tailscale role ran successfully first."
+  when: (tailscale_ip | default('') | trim) == ""
+
+- name: Install Docker (Debian/Ubuntu)
+  ansible.builtin.apt:
+    name:
+      - docker.io
+    state: present
+    update_cache: true
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Configure Docker storage driver (ThreeFold VM overlay compat)
+  # ThreeFold Grid VMs use VirtioFS which does not support overlay mounts.
+  # Use vfs by default; override with docker_storage_driver in group_vars.
+  ansible.builtin.copy:
+    dest: /etc/docker/daemon.json
+    mode: "0644"
+    content: |
+      {"storage-driver": "{{ docker_storage_driver | default('vfs') }}"}
+  register: _docker_daemon_json_gw
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Ensure dockerd is running (zinit)
+  ansible.builtin.copy:
+    dest: /etc/zinit/dockerd.yaml
+    mode: "0644"
+    content: |
+      exec: dockerd -H unix:///var/run/docker.sock
+  register: _dockerd_zinit_cfg_gw
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Restart dockerd when config changed
+  ansible.builtin.shell: |
+    zinit stop dockerd 2>/dev/null || true
+    zinit forget dockerd 2>/dev/null || true
+    sleep 1
+    kill -9 $(pgrep dockerd) 2>/dev/null || true
+    sleep 1
+    rm -rf /var/lib/docker/image /var/lib/docker/vfs 2>/dev/null || true
+    zinit monitor dockerd 2>/dev/null || true
+    zinit start dockerd 2>/dev/null || true
+    exit 0
+  when:
+    - ansible_facts.os_family == 'Debian'
+    - _docker_daemon_json_gw is changed or _dockerd_zinit_cfg_gw is changed
+
+- name: Start dockerd (zinit)
+  ansible.builtin.command:
+    argv: ["zinit", "monitor", "dockerd"]
+  register: dockerd_zinit
+  changed_when: dockerd_zinit.rc == 0
+  failed_when: false
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Wait for Docker socket
+  ansible.builtin.wait_for:
+    path: /var/run/docker.sock
+    timeout: 60
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Enable IPv4 forwarding (exit node)
+  ansible.builtin.sysctl:
+    name: net.ipv4.ip_forward
+    value: "1"
+    state: present
+    reload: true
+  when: gateway_enable_exit_node_nat
+
+- name: Enable IPv6 forwarding (exit node)
+  ansible.builtin.sysctl:
+    name: net.ipv6.conf.all.forwarding
+    value: "1"
+    state: present
+    reload: true
+  when: gateway_enable_exit_node_nat
+
+- name: Configure NAT masquerade for exit node (best-effort)
+  ansible.builtin.command:
+    argv:
+      - iptables
+      - -t
+      - nat
+      - -C
+      - POSTROUTING
+      - -o
+      - "{{ ansible_default_ipv4.interface }}"
+      - -j
+      - MASQUERADE
+  register: iptables_nat_check
+  changed_when: false
+  failed_when: false
+  when: gateway_enable_exit_node_nat
+
+- name: Add NAT masquerade for exit node
+  ansible.builtin.command:
+    argv:
+      - iptables
+      - -t
+      - nat
+      - -A
+      - POSTROUTING
+      - -o
+      - "{{ ansible_default_ipv4.interface }}"
+      - -j
+      - MASQUERADE
+  when: gateway_enable_exit_node_nat and (iptables_nat_check.rc | default(1)) != 0
+
+- name: Create Caddy directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - /opt/caddy
+    - /opt/caddy/build
+    - /opt/caddy/data
+    - /opt/caddy/config
+
+- name: Validate public service TLS mode
+  ansible.builtin.assert:
+    that:
+      - (public_service_tls_mode | default('letsencrypt')) in ['letsencrypt', 'namecheap']
+    fail_msg: >-
+      public_service_tls_mode must be either letsencrypt or namecheap.
+
+- name: Validate gateway_services entries
+  ansible.builtin.assert:
+    that:
+      - (item.name | default('') | trim) != ''
+      - (item.upstream_host | default('') | trim) != ''
+      - (item.upstream_port | default('') | string | trim) != ''
+      - item.upstream_host in hostvars
+    fail_msg: >-
+      Invalid gateway_services entry {{ item | to_nice_json }}. Each item must include
+      name, upstream_host, upstream_port, and upstream_host must exist in inventory.
+  loop: "{{ gateway_services | default([]) }}"
+  when: (gateway_services | default([]) | length) > 0
+
+- name: Determine whether Namecheap-backed internal wildcard TLS is enabled
+  ansible.builtin.set_fact:
+    gateway_internal_wildcard_enabled: >-
+      {{
+        (headscale_magic_dns_base_domain | default('') | trim) != ''
+        and (internal_service_tls_mode | default('internal')) == 'namecheap'
+      }}
+
+- name: Determine whether Namecheap-backed public wildcard TLS is enabled
+  ansible.builtin.set_fact:
+    gateway_public_wildcard_enabled: >-
+      {{
+        (public_service_tls_mode | default('letsencrypt')) == 'namecheap'
+        and (gateway_services | default([]) | length) > 0
+      }}
+
+- name: Fail if public wildcard TLS is enabled with the legacy gateway_domains schema
+  ansible.builtin.fail:
+    msg: >-
+      public_service_tls_mode=namecheap requires gateway_services. Migrate legacy
+      gateway_domains/gateway_upstream_* config first.
+  when:
+    - (public_service_tls_mode | default('letsencrypt')) == 'namecheap'
+    - (gateway_services | default([]) | length) == 0
+    - (gateway_domains | default([]) | length) > 0
+
+- name: Fail if public wildcard TLS is enabled without base_domain
+  ansible.builtin.fail:
+    msg: >-
+      public_service_tls_mode=namecheap requires base_domain so the gateway can request
+      a wildcard certificate for *.base_domain.
+  when:
+    - gateway_public_wildcard_enabled
+    - (base_domain | default('') | trim) == ''
+
+- name: Validate public wildcard service names
+  ansible.builtin.assert:
+    that:
+      - "(item.name | default('') | trim) != ''"
+      - "'.' not in (item.name | default('') | trim)"
+    fail_msg: >-
+      public_service_tls_mode=namecheap requires single-label gateway_services names so
+      *.{{ base_domain | default('<base_domain>') }} covers every public hostname.
+      Invalid entry: {{ item | to_nice_json }}
+  loop: "{{ gateway_services | default([]) }}"
+  when: gateway_public_wildcard_enabled
+
+- name: Determine whether the gateway Namecheap plugin is required
+  ansible.builtin.set_fact:
+    gateway_namecheap_plugin_required: >-
+      {{ gateway_internal_wildcard_enabled or gateway_public_wildcard_enabled }}
+
+- name: Determine effective Namecheap API client IP for gateway wildcard TLS
+  ansible.builtin.set_fact:
+    gateway_namecheap_client_ip_effective: >-
+      {{
+        (internal_service_tls_namecheap_client_ip | default('') | trim)
+        if (internal_service_tls_namecheap_client_ip | default('') | trim) != ''
+        else (
+          tf_public_ip | default(ansible_default_ipv4.address | default(ansible_host | default('')))
+        )
+      }}
+  when: gateway_namecheap_plugin_required
+
+- name: Fail if Namecheap wildcard TLS is enabled without API credentials
+  ansible.builtin.fail:
+    msg: >-
+      Namecheap wildcard TLS on the gateway requires NAMECHEAP_API_USER and
+      NAMECHEAP_API_KEY in secrets.env.
+  when:
+    - gateway_namecheap_plugin_required
+    - (lookup('env', 'NAMECHEAP_API_USER') | trim) == '' or (lookup('env', 'NAMECHEAP_API_KEY') | trim) == ''
+
+- name: Fail if Namecheap wildcard TLS is enabled without a usable gateway client IP
+  ansible.builtin.fail:
+    msg: >-
+      Namecheap wildcard TLS on the gateway requires a public client IP for Namecheap API
+      allowlisting. Set internal_service_tls_namecheap_client_ip explicitly if tf_public_ip is unavailable.
+  when:
+    - gateway_namecheap_plugin_required
+    - (gateway_namecheap_client_ip_effective | default('') | trim) == ''
+
+- name: Render gateway Caddy Dockerfile with the Namecheap DNS plugin
+  ansible.builtin.copy:
+    dest: /opt/caddy/build/Dockerfile.namecheap
+    mode: "0644"
+    content: |
+      FROM caddy:builder AS builder
+      RUN xcaddy build --with github.com/caddy-dns/namecheap@{{ internal_service_tls_namecheap_plugin_version }}
+
+      FROM caddy:2
+      COPY --from=builder /usr/bin/caddy /usr/bin/caddy
+  register: gateway_namecheap_dockerfile
+  when: gateway_namecheap_plugin_required
+
+- name: Check whether the gateway Namecheap Caddy image already exists
+  ansible.builtin.command:
+    argv: ["docker", "image", "inspect", "privalon-caddy-namecheap:{{ internal_service_tls_namecheap_plugin_version }}"]
+  register: gateway_namecheap_image_inspect
+  changed_when: false
+  failed_when: false
+  when: gateway_namecheap_plugin_required
+
+- name: Build the gateway Caddy image with the Namecheap DNS plugin
+  ansible.builtin.command:
+    argv:
+      - docker
+      - build
+      - -t
+      - privalon-caddy-namecheap:{{ internal_service_tls_namecheap_plugin_version }}
+      - -f
+      - /opt/caddy/build/Dockerfile.namecheap
+      - /opt/caddy/build
+  register: gateway_namecheap_image_build
+  changed_when: gateway_namecheap_image_build.rc == 0
+  when:
+    - gateway_namecheap_plugin_required
+    - gateway_namecheap_dockerfile is changed or (gateway_namecheap_image_inspect.rc | default(1)) != 0
+
+- name: Remove gateway Namecheap env file when wildcard mode is disabled
+  ansible.builtin.file:
+    path: /opt/caddy/namecheap.env
+    state: absent
+  when: not gateway_namecheap_plugin_required
+
+- name: Render gateway Namecheap env file
+  ansible.builtin.copy:
+    dest: /opt/caddy/namecheap.env
+    mode: "0600"
+    content: |
+      NAMECHEAP_API_USER={{ lookup('env', 'NAMECHEAP_API_USER') }}
+      NAMECHEAP_API_KEY={{ lookup('env', 'NAMECHEAP_API_KEY') }}
+  no_log: true
+  when: gateway_namecheap_plugin_required
+
+- name: Determine gateway Caddy image reference
+  ansible.builtin.set_fact:
+    gateway_caddy_image: >-
+      {{
+        'privalon-caddy-namecheap:' + internal_service_tls_namecheap_plugin_version
+        if gateway_namecheap_plugin_required
+        else 'caddy:2'
+      }}
+
+- name: Render Caddyfile
+  ansible.builtin.template:
+    src: Caddyfile.j2
+    dest: /opt/caddy/Caddyfile
+    mode: "0644"
+
+- name: Remove existing caddy container (if any)
+  ansible.builtin.command:
+    argv: ["docker", "rm", "-f", "caddy"]
+  register: caddy_rm
+  changed_when: caddy_rm.rc == 0
+  failed_when: false
+
+- name: Build gateway Caddy docker run argv
+  ansible.builtin.set_fact:
+    gateway_caddy_run_argv: >-
+      {{
+        ['docker', 'run', '-d', '--name', 'caddy', '--restart', 'unless-stopped', '--network', 'host']
+        + (['--env-file', '/opt/caddy/namecheap.env'] if gateway_namecheap_plugin_required else [])
+        + ['-v', '/opt/caddy/Caddyfile:/etc/caddy/Caddyfile:ro', '-v', '/opt/caddy/data:/data', '-v', '/opt/caddy/config:/config', gateway_caddy_image]
+      }}
+
+- name: Run Caddy reverse proxy (public 80/443)
+  ansible.builtin.command:
+    argv: "{{ gateway_caddy_run_argv }}"
+  register: caddy_run
+  changed_when: caddy_run.rc == 0
+
+- name: Determine gateway wildcard status file path on controller
+  ansible.builtin.set_fact:
+    gateway_wildcard_status_file: "{{ (lookup('env', 'TF_OUTPUTS_JSON') | dirname) ~ '/gateway-wildcard-status.json' }}"
+
+- name: Determine public wildcard probe hostname
+  ansible.builtin.set_fact:
+    gateway_public_wildcard_probe_hostname: >-
+      {{
+        (
+          (gateway_services | first).name
+          if '.' in ((gateway_services | first).name | default('') | trim)
+          else ((gateway_services | first).name | trim) ~ '.' ~ (base_domain | trim)
+        )
+      }}
+  when: gateway_public_wildcard_enabled
+
+- name: Determine internal wildcard probe hostname
+  ansible.builtin.set_fact:
+    gateway_internal_wildcard_probe_hostname: "grafana.{{ headscale_magic_dns_base_domain }}"
+  when: gateway_internal_wildcard_enabled
+
+- name: Check whether public wildcard TLS is active on the gateway
+  ansible.builtin.shell: |
+    set -euo pipefail
+    server_name="${SERVER_NAME}"
+    wildcard_san="DNS:*.${WILDCARD_DOMAIN}"
+
+    for _ in $(seq 1 18); do
+      cert_text="$(openssl s_client -connect 127.0.0.1:443 -servername "${server_name}" </dev/null 2>/dev/null | openssl x509 -noout -ext subjectAltName 2>/dev/null || true)"
+      if printf '%s\n' "${cert_text}" | grep -Fq "${wildcard_san}"; then
+        exit 0
+      fi
+      sleep 10
+    done
+
+    exit 1
+  args:
+    executable: /bin/bash
+  environment:
+    SERVER_NAME: "{{ gateway_public_wildcard_probe_hostname }}"
+    WILDCARD_DOMAIN: "{{ base_domain }}"
+  register: gateway_public_wildcard_tls_probe
+  changed_when: false
+  failed_when: false
+  when: gateway_public_wildcard_enabled
+
+- name: Check whether internal wildcard TLS is active on the gateway
+  ansible.builtin.shell: |
+    set -euo pipefail
+    server_name="${SERVER_NAME}"
+    wildcard_san="DNS:*.${WILDCARD_DOMAIN}"
+
+    for _ in $(seq 1 18); do
+      cert_text="$(openssl s_client -connect "${CONNECT_HOST}:443" -servername "${server_name}" </dev/null 2>/dev/null | openssl x509 -noout -ext subjectAltName 2>/dev/null || true)"
+      if printf '%s\n' "${cert_text}" | grep -Fq "${wildcard_san}"; then
+        exit 0
+      fi
+      sleep 10
+    done
+
+    exit 1
+  args:
+    executable: /bin/bash
+  environment:
+    CONNECT_HOST: "{{ tailscale_ip }}"
+    SERVER_NAME: "{{ gateway_internal_wildcard_probe_hostname }}"
+    WILDCARD_DOMAIN: "{{ headscale_magic_dns_base_domain }}"
+  register: gateway_internal_wildcard_tls_probe
+  changed_when: false
+  failed_when: false
+  when: gateway_internal_wildcard_enabled
+
+- name: Persist gateway wildcard TLS activation status for deployment summary
+  ansible.builtin.copy:
+    dest: "{{ gateway_wildcard_status_file }}"
+    mode: "0644"
+    content: >-
+      {{
+        {
+          'public_enabled': (gateway_public_wildcard_enabled | bool),
+          'public_active': ((gateway_public_wildcard_tls_probe.rc | default(1)) == 0),
+          'public_probe_hostname': (gateway_public_wildcard_probe_hostname | default('')),
+          'internal_enabled': (gateway_internal_wildcard_enabled | bool),
+          'internal_active': ((gateway_internal_wildcard_tls_probe.rc | default(1)) == 0),
+          'internal_probe_hostname': (gateway_internal_wildcard_probe_hostname | default('')),
+          'gateway_public_ip': (tf_public_ip | default('')),
+          'gateway_tailscale_ip': (tailscale_ip | default(''))
+        } | to_nice_json
+      }}
+  delegate_to: localhost
+  changed_when: false

@@ -1,0 +1,52 @@
+---
+observability:
+  services:
+    - service_name: headscale
+      role_label: control
+      host_groups: [control]
+      logs:
+        docker_containers: [headscale]
+        files: []
+        journald_units: []
+      health_checks:
+        local:
+          - name: control-plane-healthy
+            type: command
+            command: docker exec headscale headscale health >/dev/null 2>&1
+        remote:
+          - name: public-health
+            type: http
+            target: headscale_url
+            path: /health
+            expected_status: 200
+    - service_name: headplane
+      role_label: control
+      host_groups: [control]
+      enabled_var: headplane_enabled
+      logs:
+        docker_containers: [headplane]
+        files: []
+        journald_units: []
+      health_checks:
+        local:
+          - name: container-running
+            type: docker
+            container: headplane
+        remote:
+          - name: tailnet-listener
+            type: tcp
+            target: tailscale_self
+            port: 3000
+    - service_name: caddy
+      role_label: control
+      host_groups: [control]
+      logs:
+        docker_containers: [caddy]
+        files: []
+        journald_units: []
+      health_checks:
+        local:
+          - name: container-running
+            type: docker
+            container: caddy
+        remote: []

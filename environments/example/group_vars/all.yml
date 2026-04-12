@@ -1,0 +1,62 @@
+---
+# Environment — Ansible variable overrides.
+# These values take highest precedence over ansible/group_vars/all/main.yml.
+#
+# Commit this file. It defines the desired state of the environment.
+# Do NOT put secrets here — use ansible-vault or a secrets manager.
+
+# Admin email — used for Let's Encrypt cert expiry warnings and future services.
+# admin_email: "you@yourdomain.com"
+
+# ── Domain and Headscale TLS ───────────────────────────────────────────
+# Root domain — set once, everything auto-derives from it:
+#   - headscale_url becomes https://<headscale_subdomain>.<base_domain>
+#   - headscale_tls_mode switches to letsencrypt automatically by default
+#   - set headscale_tls_mode_auto: false if you intentionally want internal TLS
+#   - DNS automation (dns-setup.sh) creates A records under this domain
+#   - MagicDNS names become <hostname>.in.<base_domain>
+#
+# Without base_domain, headscale_url defaults to https://<control_ip>.sslip.io
+# with internal (self-signed) TLS.
+#
+# base_domain: "yourdomain.com"
+# headscale_subdomain: "headscale"           # A record: headscale.<base_domain> → control IP
+# headscale_magic_dns_base_domain: "in.yourdomain.com"  # private names over Tailscale
+# internal_service_tls_mode: "internal"       # or "namecheap" for wildcard LE on *.in.<base_domain>
+
+# Enable automated backups (requires S3 credentials in secrets.env)
+backup_enabled: false
+
+# Observability defaults.
+# Centralized logs and service health are enabled by default from ansible/group_vars.
+# Override only when you need different retention or want to disable the archive export.
+# logging_loki_retention_days: 30
+# logging_archive_retention_days: 90
+# logging_archive_enabled: false
+
+# Headscale node database restore behaviour on full redeploy.
+# true (default): restore db.sqlite from backup — nodes keep their registrations and IPs.
+# For an intentional destructive tailnet reset, keep this at true and run deploy.sh with
+# --fresh-tailnet instead; that temporarily overrides both Headscale DB restore and per-VM
+# Tailscale state restore without changing the committed environment defaults.
+headscale_restore_database: true
+
+# S3 storage backends for Restic backups.
+# Credentials come from secrets.env via environment variables.
+# Uncomment and configure when backup_enabled is set to true.
+#
+# backup_backends:
+#   # Primary: AWS S3 — main backup storage.
+#   - name: "primary"
+#     type: "s3"
+#     endpoint: "https://s3.amazonaws.com"
+#     bucket: "your-backup-bucket-name"
+#     access_key: "{{ lookup('env', 'BACKUP_S3_PRIMARY_ACCESS_KEY') }}"
+#     secret_key: "{{ lookup('env', 'BACKUP_S3_PRIMARY_SECRET_KEY') }}"
+#   # Secondary: Hetzner Object Storage (Helsinki) — disaster-recovery replica.
+#   - name: "secondary"
+#     type: "s3"
+#     endpoint: "https://hel1.your-objectstorage.com"
+#     bucket: "your-backup-bucket-secondary"
+#     access_key: "{{ lookup('env', 'BACKUP_S3_SECONDARY_ACCESS_KEY') }}"
+#     secret_key: "{{ lookup('env', 'BACKUP_S3_SECONDARY_SECRET_KEY') }}"

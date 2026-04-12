@@ -1,0 +1,398 @@
+---
+# Backup role: deployment tasks (included from main.yml when backup_enabled=true).
+#
+# 1. Validate credentials
+# 2. Install cron + Restic binary
+# 3. Create backup directories
+# 4. Discover service backup manifests
+# 5. Deploy per-service configs, wrapper scripts, and cron jobs
+# 6. Initialize Restic repos
+# 7. Run first backup
+
+- name: Validate backup credentials
+  ansible.builtin.fail:
+    msg: >-
+      Backup is enabled but RESTIC_PASSWORD is not set.
+      Export RESTIC_PASSWORD before running Ansible, or set backup_enabled=false.
+  when: (backup_restic_password | default('') | trim) == ''
+
+- name: Validate at least one backend is configured
+  ansible.builtin.fail:
+    msg: >-
+      Backup is enabled but no backends are configured with credentials.
+      Set BACKUP_S3_PRIMARY_ACCESS_KEY and BACKUP_S3_PRIMARY_SECRET_KEY environment variables.
+  when: >-
+    backup_backends | length == 0
+
+- name: Validate secondary backend is configured (required when backup is enabled)
+  ansible.builtin.fail:
+    msg: >-
+      Backup requires a secondary backend for disaster-recovery redundancy, but none is configured.
+      Add a second entry to backup_backends in group_vars and set BACKUP_S3_SECONDARY_ACCESS_KEY
+      and BACKUP_S3_SECONDARY_SECRET_KEY in secrets.env.
+  when: >-
+    backup_backends | length < 2
+    or (backup_backends[1].access_key | default('') | trim) == ''
+    or (backup_backends[1].secret_key | default('') | trim) == ''
+    or (backup_backends[0].access_key | default('') | trim) == ''
+
+# ── Install cron daemon ──
+
+- name: Install cron package
+  ansible.builtin.apt:
+    name:
+      - cron
+      - sqlite3
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create zinit service for cron daemon
+  ansible.builtin.copy:
+    dest: /etc/zinit/crond.yaml
+    content: |
+      exec: /usr/sbin/cron -f
+    mode: "0644"
+  register: _crond_zinit
+
+- name: Monitor crond via zinit
+  ansible.builtin.command:
+    argv: ["zinit", "monitor", "crond"]
+  when: _crond_zinit.changed
+  changed_when: true
+  failed_when: false
+
+- name: Ensure crond is running via zinit
+  ansible.builtin.shell: |
+    set -euo pipefail
+    state=$(zinit status crond 2>/dev/null | grep -oP '(?<=state: )\w+' || echo "unknown")
+    if [ "$state" != "Running" ]; then
+      zinit start crond 2>/dev/null || true
+    fi
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+# ── Install Restic ──
+
+- name: Check if Restic is installed
+  ansible.builtin.stat:
+    path: /usr/local/bin/restic
+  register: restic_bin
+
+- name: Check installed Restic version
+  ansible.builtin.command:
+    argv: ["/usr/local/bin/restic", "version"]
+  register: restic_version_check
+  changed_when: false
+  failed_when: false
+  when: restic_bin.stat.exists
+
+- name: Download and install Restic
+  when: >-
+    not restic_bin.stat.exists
+    or (restic_version_check.stdout | default('') is not search(backup_restic_version))
+  block:
+    - name: Ensure bzip2 is installed
+      ansible.builtin.apt:
+        name: bzip2
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Download Restic binary
+      ansible.builtin.get_url:
+        url: "https://github.com/restic/restic/releases/download/v{{ backup_restic_version }}/restic_{{ backup_restic_version }}_linux_amd64.bz2"
+        dest: /tmp/restic.bz2
+        mode: "0644"
+
+    - name: Decompress Restic binary
+      ansible.builtin.command:
+        argv: ["bzip2", "-df", "/tmp/restic.bz2"]
+      args:
+        creates: /tmp/restic
+
+    - name: Install Restic binary
+      ansible.builtin.copy:
+        src: /tmp/restic
+        dest: /usr/local/bin/restic
+        mode: "0755"
+        remote_src: true
+
+    - name: Clean up Restic download
+      ansible.builtin.file:
+        path: /tmp/restic
+        state: absent
+
+# ── Create directories ──
+
+- name: Create backup directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0700"
+  loop:
+    - "{{ backup_base_dir }}"
+    - "{{ backup_config_dir }}"
+    - "{{ backup_bin_dir }}"
+    - "{{ backup_cache_dir }}"
+    - "{{ backup_textfile_dir }}"
+
+# ── Discover backup manifests from applied roles ──
+
+- name: Find backup manifest files
+  ansible.builtin.find:
+    paths: "{{ role_path }}/../"
+    patterns: "backup.yml"
+    recurse: true
+    file_type: file
+  delegate_to: localhost
+  become: false
+  register: _backup_manifest_files
+
+- name: Discover backup manifests from roles
+  ansible.builtin.include_vars:
+    file: "{{ item.path }}"
+    name: "_backup_manifest_{{ idx }}"
+  loop: "{{ _backup_manifest_files.files | default([]) }}"
+  loop_control:
+    index_var: idx
+    label: "{{ item.path | basename }}"
+  when: item.path is search('/defaults/backup.yml$')
+  register: _backup_manifests_raw
+
+- name: Build backup manifests list
+  ansible.builtin.set_fact:
+    _backup_manifests: >-
+      {{
+        _backup_manifests_raw.results
+        | default([])
+        | selectattr('ansible_facts', 'defined')
+        | map(attribute='ansible_facts')
+        | map('dict2items')
+        | map('first')
+        | map(attribute='value')
+        | map(attribute='backup')
+        | list
+      }}
+
+- name: Show discovered backup services
+  ansible.builtin.debug:
+    msg: "Discovered backup manifests: {{ _backup_manifests | map(attribute='service_name') | list }}"
+
+# ── Filter manifests to only services running on this host ──
+
+- name: Filter manifests for this host's roles
+  ansible.builtin.set_fact:
+    backup_services: >-
+      {{
+        _backup_manifests
+        | selectattr('service_name', 'in', _host_services)
+        | list
+      }}
+  vars:
+    _host_services: >-
+      {{
+        (group_names | map('regex_replace', '^control$', 'headscale') | list)
+        + (group_names | map('regex_replace', '^gateway$', 'gateway') | list)
+        + (group_names | map('regex_replace', '^monitoring$', 'monitoring') | list)
+        + ['tailscale']
+      }}
+
+- name: Show backup services for this host
+  ansible.builtin.debug:
+    msg: "Backup services for {{ inventory_hostname }}: {{ backup_services | map(attribute='service_name') | list }}"
+
+# ── Deploy per-service backup environment file ──
+
+- name: Deploy backup environment file
+  ansible.builtin.template:
+    src: backup-env.j2
+    dest: "{{ backup_base_dir }}/.env"
+    mode: "0600"
+
+# ── Deploy per-service configs and scripts ──
+
+- name: Deploy per-service backup config
+  ansible.builtin.template:
+    src: backup-config.yml.j2
+    dest: "{{ backup_config_dir }}/{{ item.service_name }}.yml"
+    mode: "0600"
+  loop: "{{ backup_services }}"
+  loop_control:
+    label: "{{ item.service_name }}"
+
+- name: Deploy per-service backup wrapper script
+  ansible.builtin.template:
+    src: backup-wrapper.sh.j2
+    dest: "{{ backup_bin_dir }}/backup-{{ item.service_name }}.sh"
+    mode: "0755"
+  loop: "{{ backup_services }}"
+  loop_control:
+    label: "{{ item.service_name }}"
+
+- name: Deploy backup health check helper
+  ansible.builtin.template:
+    src: check-backup-health.sh.j2
+    dest: /usr/local/bin/check-blueprint-backup-health
+    mode: "0755"
+
+# ── Deploy per-service cron jobs ──
+
+- name: Deploy per-service backup cron job
+  ansible.builtin.cron:
+    name: "backup-{{ item.service_name }}"
+    minute: "{{ (item.schedule_cron | default(backup_schedule_cron)).minute | default('0') }}"
+    hour: "{{ (item.schedule_cron | default(backup_schedule_cron)).hour | default('2') }}"
+    day: "{{ (item.schedule_cron | default(backup_schedule_cron)).day | default('*') }}"
+    month: "{{ (item.schedule_cron | default(backup_schedule_cron)).month | default('*') }}"
+    weekday: "{{ (item.schedule_cron | default(backup_schedule_cron)).weekday | default('*') }}"
+    job: "{{ backup_bin_dir }}/backup-{{ item.service_name }}.sh >> /var/log/backup-{{ item.service_name }}.log 2>&1"
+    user: root
+    state: present
+  loop: "{{ backup_services }}"
+  loop_control:
+    label: "{{ item.service_name }}"
+
+# ── Initialize Restic repos (idempotent) ──
+
+- name: Initialize Restic repos on primary backend
+  ansible.builtin.shell: |
+    set -euo pipefail
+    export RESTIC_REPOSITORY="s3:{{ backup_backends[0].endpoint }}/{{ backup_backends[0].bucket }}/{{ backup_env }}/{{ backup_repo_name }}"
+    export RESTIC_PASSWORD="{{ backup_restic_password }}"
+    export AWS_ACCESS_KEY_ID="{{ backup_backends[0].access_key }}"
+    export AWS_SECRET_ACCESS_KEY="{{ backup_backends[0].secret_key }}"
+    export RESTIC_CACHE_DIR="{{ backup_cache_dir }}"
+    restic snapshots 2>/dev/null || restic init
+  args:
+    executable: /bin/bash
+  loop: "{{ backup_services }}"
+  loop_control:
+    label: "{{ item.service_name }}"
+  register: restic_init_primary
+  changed_when: "'created restic repository' in (restic_init_primary.stdout | default(''))"
+  no_log: true
+  vars:
+    backup_repo_name: >-
+      {{
+        item.service_name ~ ('-' ~ inventory_hostname if item.service_name == 'tailscale' else '')
+      }}
+
+- name: Initialize Restic repos on secondary backend
+  ansible.builtin.shell: |
+    set -euo pipefail
+    export RESTIC_REPOSITORY="s3:{{ backup_backends[1].endpoint }}/{{ backup_backends[1].bucket }}/{{ backup_env }}/{{ backup_repo_name }}"
+    export RESTIC_PASSWORD="{{ backup_restic_password }}"
+    export AWS_ACCESS_KEY_ID="{{ backup_backends[1].access_key }}"
+    export AWS_SECRET_ACCESS_KEY="{{ backup_backends[1].secret_key }}"
+    export RESTIC_CACHE_DIR="{{ backup_cache_dir }}"
+    timeout 120 restic snapshots >/dev/null 2>&1 || timeout 120 restic init
+  args:
+    executable: /bin/bash
+  loop: "{{ backup_services }}"
+  loop_control:
+    label: "{{ item.service_name }}"
+  register: restic_init_secondary
+  changed_when: "'created restic repository' in (restic_init_secondary.stdout | default(''))"
+  retries: 4
+  delay: 15
+  until: restic_init_secondary.rc == 0
+  when: backup_backends | length > 1 and (backup_backends[1].access_key | default('') | trim) != ''
+  no_log: true
+  vars:
+    backup_repo_name: >-
+      {{
+        item.service_name ~ ('-' ~ inventory_hostname if item.service_name == 'tailscale' else '')
+      }}
+
+- name: Fail if secondary backend init failed
+  ansible.builtin.fail:
+    msg: >-
+      Secondary backup backend init failed for one or more services.
+      Check that the endpoint ({{ backup_backends[1].endpoint }}), bucket
+      ({{ backup_backends[1].bucket }}), and credentials are correct.
+      The role now retries transient S3-compatible backend errors automatically,
+      so a persistent failure here is likely configuration or provider-side.
+  when:
+    - restic_init_secondary is defined
+    - restic_init_secondary.results is defined
+    - restic_init_secondary.results | selectattr('rc', 'defined') | selectattr('rc', 'ne', 0) | list | length > 0
+
+# ── Run first backup immediately ──
+
+- name: Run first backup for each service
+  ansible.builtin.command:
+    argv: ["{{ backup_bin_dir }}/backup-{{ item.service_name }}.sh"]
+  loop: "{{ backup_services }}"
+  loop_control:
+    label: "{{ item.service_name }}"
+  register: first_backup
+  changed_when: true
+  failed_when: false
+
+# ── Weekly health summary (monitoring hosts only) ──
+
+- name: Derive tailscale_ip for backup summary script (fallback)
+  ansible.builtin.command:
+    argv: ["tailscale", "ip", "-4"]
+  register: _backup_ts_ip_cmd
+  changed_when: false
+  failed_when: false
+  when:
+    - backup_summary_enabled | default(true)
+    - "'monitoring' in group_names"
+    - (tailscale_ip | default('') | trim) == ''
+
+- name: Set tailscale_ip fact for backup summary (fallback)
+  ansible.builtin.set_fact:
+    tailscale_ip: "{{ (_backup_ts_ip_cmd.stdout_lines | default([]) | first | default('')) | trim }}"
+  when:
+    - backup_summary_enabled | default(true)
+    - "'monitoring' in group_names"
+    - (tailscale_ip | default('') | trim) == ''
+    - _backup_ts_ip_cmd is not skipped
+
+- name: Deploy weekly backup summary script
+  ansible.builtin.template:
+    src: backup-summary.sh.j2
+    dest: "{{ backup_bin_dir }}/backup-summary.sh"
+    mode: "0755"
+  when:
+    - backup_summary_enabled | default(true)
+    - "'monitoring' in group_names"
+
+- name: Deploy weekly backup summary cron job
+  ansible.builtin.cron:
+    name: "backup-summary"
+    minute: "{{ (backup_summary_schedule.split() | default(['0','8','*','*','1']))[0] }}"
+    hour: "{{ (backup_summary_schedule.split() | default(['0','8','*','*','1']))[1] }}"
+    day: "{{ (backup_summary_schedule.split() | default(['0','8','*','*','1']))[2] }}"
+    month: "{{ (backup_summary_schedule.split() | default(['0','8','*','*','1']))[3] }}"
+    weekday: "{{ (backup_summary_schedule.split() | default(['0','8','*','*','1']))[4] }}"
+    job: "{{ backup_bin_dir }}/backup-summary.sh >> /var/log/backup-summary.log 2>&1"
+    user: root
+    state: present
+  when:
+    - backup_summary_enabled | default(true)
+    - "'monitoring' in group_names"
+
+# ── Weekly restore drill ──
+
+- name: Deploy backup drill script
+  ansible.builtin.template:
+    src: backup-drill.sh.j2
+    dest: "{{ backup_bin_dir }}/backup-drill.sh"
+    mode: "0755"
+
+- name: Deploy weekly backup drill cron job
+  ansible.builtin.cron:
+    name: "backup-drill"
+    minute: "0"
+    hour: "4"
+    day: "*"
+    month: "*"
+    weekday: "0"
+    job: "{{ backup_bin_dir }}/backup-drill.sh >> /var/log/backup-drill.log 2>&1"
+    user: root
+    state: present

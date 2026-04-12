@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+python3 - <<'PY'
+import pathlib
+import re
+import time
+
+metrics_dir = pathlib.Path("{{ backup_textfile_dir }}")
+status_pattern = re.compile(r'^backup_last_status\{[^}]*service="([^"]+)"[^}]*\}\s+([0-9.]+)$')
+ts_pattern = re.compile(r'^backup_last_success_timestamp\{[^}]*service="([^"]+)"[^}]*\}\s+([0-9.]+)$')
+
+status_by_service = {}
+timestamp_by_service = {}
+
+for path in metrics_dir.glob('backup_*.prom'):
+    try:
+        lines = path.read_text(encoding='utf-8').splitlines()
+    except OSError:
+        continue
+    for line in lines:
+        status_match = status_pattern.match(line)
+        if status_match:
+            status_by_service[status_match.group(1)] = float(status_match.group(2))
+            continue
+        ts_match = ts_pattern.match(line)
+        if ts_match:
+            timestamp_by_service[ts_match.group(1)] = float(ts_match.group(2))
+
+if not status_by_service:
+    raise SystemExit(1)
+
+now = time.time()
+max_age_seconds = 90000
+
+for service, status in status_by_service.items():
+    if status < 1:
+        raise SystemExit(1)
+    last_success = timestamp_by_service.get(service, 0)
+    if last_success <= 0 or now - last_success > max_age_seconds:
+        raise SystemExit(1)
+PY

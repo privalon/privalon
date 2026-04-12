@@ -1,0 +1,371 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [
+    {
+      "title": "Infrastructure Health",
+      "type": "dashboards",
+      "uid": "server-health-basic"
+    },
+    {
+      "title": "Logs Overview",
+      "type": "dashboards",
+      "uid": "logs-overview"
+    }
+  ],
+  "panels": [
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "name"
+      },
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "max by (service, node) (blueprint_service_health{env=~\"$env\",node=~\"$node\",role=~\"$role\",service=~\"$service\",scope=\"local\"})",
+          "legendFormat": "{{service}} @ {{node}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Service status summary",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "id": 2,
+      "options": {
+        "displayMode": "color-background",
+        "legend": {
+          "showLegend": true
+        }
+      },
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "max by (service, node, check, probe_type) (probe_success{job=~\"service_probe_.*\",env=~\"$env\",node=~\"$node\",role=~\"$role\",service=~\"$service\"})",
+          "legendFormat": "{{service}} / {{check}} / {{probe_type}} / {{node}}",
+          "refId": "A"
+        }
+      ],
+      "title": "HTTP/TCP probe status",
+      "type": "status-history"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "id": 3,
+      "options": {
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "blueprint_service_health{env=~\"$env\",node=~\"$node\",role=~\"$role\",service=~\"$service\",check=\"container-running\",scope=\"local\"}",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Container service status",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "id": 4,
+      "options": {
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "blueprint_service_health{env=~\"$env\",node=~\"$node\",role=~\"$role\",service=~\"$service\",scope=\"local\"} == 0",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        },
+        {
+          "editorMode": "code",
+          "expr": "probe_success{job=~\"service_probe_.*\",env=~\"$env\",node=~\"$node\",role=~\"$role\",service=~\"$service\"} == 0",
+          "format": "table",
+          "instant": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Recent service failures",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "red",
+                  "text": "FAILED"
+                },
+                "1": {
+                  "color": "green",
+                  "text": "OK"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 16
+      },
+      "id": 5,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "backup_last_status{env=~\"$env\"}",
+          "legendFormat": "{{service}} ({{env}})",
+          "refId": "A"
+        }
+      ],
+      "title": "Backup service health",
+      "type": "stat"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": [
+    "service",
+    "observability"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": ".*"
+        },
+        "definition": "label_values(blueprint_service_health, env)",
+        "includeAll": true,
+        "multi": false,
+        "name": "env",
+        "query": {
+          "query": "label_values(blueprint_service_health, env)",
+          "refId": "A"
+        },
+        "refresh": 1,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": ".*"
+        },
+        "definition": "label_values(blueprint_service_health{env=~\"$env\"}, node)",
+        "includeAll": true,
+        "multi": false,
+        "name": "node",
+        "query": {
+          "query": "label_values(blueprint_service_health{env=~\"$env\"}, node)",
+          "refId": "B"
+        },
+        "refresh": 1,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": ".*"
+        },
+        "definition": "label_values(blueprint_service_health{env=~\"$env\",node=~\"$node\"}, role)",
+        "includeAll": true,
+        "multi": false,
+        "name": "role",
+        "query": {
+          "query": "label_values(blueprint_service_health{env=~\"$env\",node=~\"$node\"}, role)",
+          "refId": "C"
+        },
+        "refresh": 1,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": ".*"
+        },
+        "definition": "label_values(blueprint_service_health{env=~\"$env\",node=~\"$node\",role=~\"$role\"}, service)",
+        "includeAll": true,
+        "multi": false,
+        "name": "service",
+        "query": {
+          "query": "label_values(blueprint_service_health{env=~\"$env\",node=~\"$node\",role=~\"$role\"}, service)",
+          "refId": "D"
+        },
+        "refresh": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "title": "Service Health",
+  "uid": "service-health",
+  "version": 1
+}

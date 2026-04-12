@@ -1,0 +1,40 @@
+# ═══════════════════════════════════════════════════════════════════════
+# Terraform variables — generic example.
+# ═══════════════════════════════════════════════════════════════════════
+#
+# For named-environment deploys (recommended), use the example files
+# inside environments/<env>/ instead.  This file is for standalone use.
+#
+# Secrets (mnemonic, passwords, S3 keys) go in secrets.env, NOT here.
+# ═══════════════════════════════════════════════════════════════════════
+
+tfgrid_network = "main"   # dev | qa | test | main
+name           = "my_stack"
+
+# ── SSH access ─────────────────────────────────────────────────────────
+ssh_public_keys = [
+  "ssh-ed25519 AAAA... key1_comment",
+  "ssh-ed25519 AAAA... key2_comment",
+]
+# Fallback: read from a file (only if ssh_public_keys is empty)
+# ssh_public_key_path = "/absolute/path/to/id_ed25519.pub"
+
+# ── Node selection ─────────────────────────────────────────────────────
+# use_scheduler = true  →  TFGrid auto-picks nodes matching resources.
+# use_scheduler = false →  You MUST set gateway_node_id, control_node_id,
+#                          and node_id inside each workload.
+# Pinning avoids slow/flaky multi-node network creation on TFGrid.
+# Find node IDs at https://dashboard.grid.tf/ → "Nodes".
+#
+# gateway_node_id = 123
+# control_node_id = 456
+
+# ── Workload VMs (no public IPv4) ──────────────────────────────────────
+workloads = {
+  monitoring = {
+    # node_id = 789   # required if use_scheduler = false
+    cpu       = 2
+    memory_mb = 4096
+    rootfs_mb = 16384
+  }
+}

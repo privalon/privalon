@@ -1,0 +1,67 @@
+---
+# ── Backup role defaults ──
+
+# Enable/disable backup system globally
+backup_enabled: true
+
+# Restic master password (should be set via env var or vault, not plaintext)
+backup_restic_password: "{{ lookup('env', 'RESTIC_PASSWORD') }}"
+
+# Restic version to install
+backup_restic_version: "0.17.3"
+
+# S3 backends — configure in environments/<env>/group_vars/all.yml.
+# Role defaults provide an empty list; each environment must define its own.
+# Example (see environments/prod/group_vars/all.yml):
+#
+#   backup_backends:
+#     - name: "primary"
+#       type: "s3"
+#       endpoint: "https://s3.amazonaws.com"
+#       bucket: "my-backups"
+#       access_key: "{{ lookup('env', 'BACKUP_S3_PRIMARY_ACCESS_KEY') }}"
+#       secret_key: "{{ lookup('env', 'BACKUP_S3_PRIMARY_SECRET_KEY') }}"
+#     - name: "secondary"
+#       type: "s3"
+#       endpoint: "https://hel1.your-objectstorage.com"
+#       bucket: "my-backups-dr"
+#       access_key: "{{ lookup('env', 'BACKUP_S3_SECONDARY_ACCESS_KEY') }}"
+#       secret_key: "{{ lookup('env', 'BACKUP_S3_SECONDARY_SECRET_KEY') }}"
+backup_backends: []
+
+# Environment name (set by deploy.sh via extra-vars)
+backup_env: "{{ blueprint_env | default('prod') }}"
+
+# Default schedule (cron format: minute hour day month weekday)
+backup_schedule_cron:
+  minute: "0"
+  hour: "2"
+  day: "*"
+  month: "*"
+  weekday: "*"
+
+# Default retention policy
+backup_retention_keep_hourly: 24
+backup_retention_keep_daily: 7
+backup_retention_keep_weekly: 4
+backup_retention_keep_monthly: 12
+backup_retention_keep_yearly: 2
+
+# Weekly health summary
+backup_summary_enabled: true
+backup_summary_schedule: "0 8 * * 1"
+
+# Restore behavior
+backup_restore_enabled: true
+
+# Alert email (used by weekly summary)
+backup_alert_email: ""
+
+# Node exporter textfile directory
+backup_textfile_dir: /var/lib/node_exporter/textfile
+
+# Backup base directories
+backup_base_dir: /opt/backup
+backup_config_dir: /opt/backup/configs
+backup_bin_dir: /opt/backup/bin
+backup_cache_dir: /var/cache/restic

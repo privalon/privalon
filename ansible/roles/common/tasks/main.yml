@@ -1,0 +1,103 @@
+---
+- name: Ensure apt cache is updated (Debian/Ubuntu)
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - jq
+      - iproute2
+      - iputils-ping
+      - sudo
+      - vim
+      - ufw
+      - iptables
+    state: present
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Ensure ops user exists
+  ansible.builtin.user:
+    name: ops
+    groups: sudo
+    append: true
+    shell: /bin/bash
+    create_home: true
+
+- name: Allow ops user passwordless sudo
+  ansible.builtin.file:
+    path: /etc/sudoers.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Allow ops user passwordless sudo
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/90-ops-nopasswd
+    mode: "0440"
+    content: "ops ALL=(ALL) NOPASSWD:ALL\n"
+
+- name: Copy root authorized_keys to ops user (if present)
+  block:
+    - name: Read root authorized_keys
+      ansible.builtin.slurp:
+        src: /root/.ssh/authorized_keys
+      register: root_authorized_keys
+
+    - name: Ensure ops .ssh exists
+      ansible.builtin.file:
+        path: /home/ops/.ssh
+        state: directory
+        owner: ops
+        group: ops
+        mode: "0700"
+
+    - name: Install ops authorized_keys
+      ansible.builtin.copy:
+        dest: /home/ops/.ssh/authorized_keys
+        owner: ops
+        group: ops
+        mode: "0600"
+        content: "{{ root_authorized_keys.content | b64decode }}"
+  rescue:
+    - name: Root authorized_keys not found; skipping ops key install
+      ansible.builtin.debug:
+        msg: "/root/.ssh/authorized_keys not present on this host yet"
+
+- name: "Harden SSH: disable password authentication"
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?PasswordAuthentication\s+'
+    line: 'PasswordAuthentication no'
+    create: false
+
+- name: "Harden SSH: disable challenge-response authentication"
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?KbdInteractiveAuthentication\s+'
+    line: 'KbdInteractiveAuthentication no'
+    create: false
+
+- name: Reload SSH service (best-effort)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    if [ -x /etc/init.d/ssh ]; then
+      /etc/init.d/ssh reload || /etc/init.d/ssh restart
+    elif command -v service >/dev/null 2>&1; then
+      service ssh reload || service ssh restart
+    else
+      exit 0
+    fi
+  args:
+    executable: /bin/bash
+  register: ssh_reload
+  changed_when: ssh_reload.rc == 0
+  failed_when: false
+  throttle: 1
+  when: ansible_facts.os_family == 'Debian'
+

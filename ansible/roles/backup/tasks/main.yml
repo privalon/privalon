@@ -1,0 +1,7 @@
+---
+# Backup role: main entry point.
+# Delegates to deploy.yml when backup is enabled.
+
+- name: Include backup tasks when enabled
+  ansible.builtin.include_tasks: deploy.yml
+  when: backup_enabled | default(true)

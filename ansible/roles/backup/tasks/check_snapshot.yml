@@ -1,0 +1,50 @@
+---
+# Backup role: check if a snapshot exists for a given service.
+#
+# Required vars:
+#   backup_service_name: name of the service to check
+#
+# Sets fact:
+#   backup_snapshot_exists: true/false
+
+- name: "Check if restic is installed ({{ backup_service_name }})"
+  ansible.builtin.stat:
+    path: /usr/local/bin/restic
+  register: _restic_bin_check
+
+- name: "Check for existing backup snapshot ({{ backup_service_name }})"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    # Source .env if present; on fresh VMs the backup deploy play hasn't run yet so
+    # the file doesn't exist — credentials are templated in explicitly below.
+    [[ -f {{ backup_base_dir }}/.env ]] && source {{ backup_base_dir }}/.env || true
+    export RESTIC_REPOSITORY="s3:{{ backup_backends[0].endpoint }}/{{ backup_backends[0].bucket }}/{{ backup_env }}/{{ backup_repo_name }}"
+    export RESTIC_PASSWORD="{{ backup_restic_password }}"
+    export AWS_ACCESS_KEY_ID="{{ backup_backends[0].access_key }}"
+    export AWS_SECRET_ACCESS_KEY="{{ backup_backends[0].secret_key }}"
+    export RESTIC_CACHE_DIR="{{ backup_cache_dir }}"
+    restic snapshots --json --latest 1 --tag "{{ backup_service_name }}" 2>/dev/null | python3 -c "
+    import json, sys
+    data = json.load(sys.stdin)
+    if data and len(data) > 0:
+        print('EXISTS')
+        sys.exit(0)
+    sys.exit(1)
+    "
+  args:
+    executable: /bin/bash
+  register: _backup_snapshot_check
+  changed_when: false
+  failed_when: false
+  no_log: true
+  when: _restic_bin_check.stat.exists
+
+  vars:
+    backup_repo_name: >-
+      {{
+        backup_service_name ~ ('-' ~ inventory_hostname if backup_service_name == 'tailscale' else '')
+      }}
+
+- name: "Set backup_snapshot_exists fact ({{ backup_service_name }})"
+  ansible.builtin.set_fact:
+    backup_snapshot_exists: "{{ _restic_bin_check.stat.exists and _backup_snapshot_check.rc | default(1) == 0 }}"

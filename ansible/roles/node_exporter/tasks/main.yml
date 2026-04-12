@@ -1,0 +1,57 @@
+---
+- name: Install node exporter (Debian/Ubuntu)
+  ansible.builtin.apt:
+    name:
+      - prometheus-node-exporter
+    state: present
+    update_cache: true
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Fail if tailscale_ip is not available
+  ansible.builtin.fail:
+    msg: "tailscale_ip is empty; ensure the tailscale role ran successfully first."
+  when: (tailscale_ip | default('') | trim) == ""
+
+- name: Create node exporter textfile directory
+  ansible.builtin.file:
+    path: /var/lib/node_exporter/textfile
+    state: directory
+    mode: "0755"
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Install zinit config for node exporter
+  ansible.builtin.copy:
+    dest: /etc/zinit/node-exporter.yaml
+    mode: "0644"
+    content: |
+      exec: /usr/bin/prometheus-node-exporter --web.listen-address={{ tailscale_ip }}:9100 --collector.textfile.directory=/var/lib/node_exporter/textfile
+  register: node_exporter_config
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Start node exporter (zinit)
+  ansible.builtin.command:
+    argv: ["zinit", "monitor", "node-exporter"]
+  register: node_exporter_zinit
+  changed_when: node_exporter_zinit.rc == 0
+  failed_when: false
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Restart node exporter on config change (zinit)
+  ansible.builtin.shell: |
+    timeout 15 zinit stop node-exporter 2>/dev/null || true
+    sleep 1
+    zinit forget node-exporter 2>/dev/null || true
+    sleep 1
+    zinit monitor node-exporter 2>/dev/null || true
+  args:
+    executable: /bin/bash
+  when:
+    - ansible_facts.os_family == 'Debian'
+    - node_exporter_config is changed
+
+- name: Wait for node exporter port
+  ansible.builtin.wait_for:
+    host: "{{ tailscale_ip }}"
+    port: 9100
+    timeout: 120
+  when: ansible_facts.os_family == 'Debian'

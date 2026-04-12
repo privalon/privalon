@@ -1,0 +1,35 @@
+{
+  # Internal PKI: Caddy generates its own CA and signs certs for all service subdomains.
+  # Transport is encrypted even inside the tailnet — useful for multi-user org deployments.
+  #
+  # To avoid browser warnings, trust the root CA on your devices:
+  #   cat /opt/monitoring-caddy/ca.crt   (copy to your devices and install as trusted CA)
+  #   macOS:  sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ca.crt
+  #   Linux:  sudo cp ca.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates
+  #   Windows: certmgr.msc → Trusted Root Certification Authorities → Import
+  # Or accept the browser warning (connection is still encrypted).
+}
+
+# Service subdomains — reachable from any tailnet-connected device over HTTPS.
+# Each service resolves via MagicDNS extra_records (populated by headscale DNS reconcile).
+# Caddy binds only to the Tailscale interface so these are never exposed publicly.
+
+grafana.{{ headscale_magic_dns_base_domain }} {
+  bind {{ tailscale_ip }}
+  tls internal
+  reverse_proxy {{ tailscale_ip }}:3000
+}
+
+prometheus.{{ headscale_magic_dns_base_domain }} {
+  bind {{ tailscale_ip }}
+  tls internal
+  reverse_proxy {{ tailscale_ip }}:9090
+}
+
+{% if backup_enabled | default(false) %}
+backrest.{{ headscale_magic_dns_base_domain }} {
+  bind {{ tailscale_ip }}
+  tls internal
+  reverse_proxy {{ tailscale_ip }}:9898
+}
+{% endif %}

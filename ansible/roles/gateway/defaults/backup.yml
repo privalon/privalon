@@ -1,0 +1,12 @@
+---
+backup:
+  service_name: "gateway"
+  targets:
+    - name: "caddy-data"
+      type: "directory"
+      path: "/opt/caddy/data"
+      description: "Caddy TLS certificates and state"
+    - name: "caddy-config"
+      type: "directory"
+      path: "/opt/caddy/config"
+      description: "Caddy configuration"

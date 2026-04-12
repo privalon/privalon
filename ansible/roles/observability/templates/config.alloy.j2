@@ -1,0 +1,82 @@
+logging {
+  level  = "info"
+  format = "logfmt"
+}
+
+loki.write "default" {
+  endpoint {
+    url = "{{ observability_loki_write_url }}"
+  }
+}
+
+{% for service in observability_host_services | default([]) %}
+{% if service.logs.files | default([]) | length > 0 %}
+local.file_match "{{ inventory_hostname | replace('-', '_') }}_{{ service.service_name | replace('-', '_') }}_files" {
+  path_targets = [
+{% for path in service.logs.files %}
+    {
+      "__path__" = "{{ path }}",
+      "env"      = "{{ blueprint_env | default('prod') }}",
+      "node"     = "{{ inventory_hostname }}",
+      "role"     = "{{ service.role_label | default(service.host_groups | default(['all']) | first) }}",
+      "service"  = "{{ service.service_name }}",
+      "source"   = "file",
+    },
+{% endfor %}
+  ]
+}
+
+loki.source.file "{{ inventory_hostname | replace('-', '_') }}_{{ service.service_name | replace('-', '_') }}_files" {
+  targets    = local.file_match.{{ inventory_hostname | replace('-', '_') }}_{{ service.service_name | replace('-', '_') }}_files.targets
+  forward_to = [loki.write.default.receiver]
+}
+
+{% endif %}
+{% if service.logs.docker_containers | default([]) | length > 0 %}
+discovery.docker "{{ inventory_hostname | replace('-', '_') }}_{{ service.service_name | replace('-', '_') }}_docker" {
+  host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "{{ inventory_hostname | replace('-', '_') }}_{{ service.service_name | replace('-', '_') }}_docker" {
+  targets = discovery.docker.{{ inventory_hostname | replace('-', '_') }}_{{ service.service_name | replace('-', '_') }}_docker.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/({{ service.logs.docker_containers | join('|') }})"
+    action        = "keep"
+  }
+
+  rule {
+    target_label = "env"
+    replacement  = "{{ blueprint_env | default('prod') }}"
+  }
+
+  rule {
+    target_label = "node"
+    replacement  = "{{ inventory_hostname }}"
+  }
+
+  rule {
+    target_label = "role"
+    replacement  = "{{ service.role_label | default(service.host_groups | default(['all']) | first) }}"
+  }
+
+  rule {
+    target_label = "service"
+    replacement  = "{{ service.service_name }}"
+  }
+
+  rule {
+    target_label = "source"
+    replacement  = "docker"
+  }
+}
+
+loki.source.docker "{{ inventory_hostname | replace('-', '_') }}_{{ service.service_name | replace('-', '_') }}_docker" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.{{ inventory_hostname | replace('-', '_') }}_{{ service.service_name | replace('-', '_') }}_docker.output
+  forward_to = [loki.write.default.receiver]
+}
+
+{% endif %}
+{% endfor %}

@@ -1,0 +1,40 @@
+{% set host = (headscale_url | regex_replace('^https?://', '') | regex_replace('/.*$', '')) %}
+
+{% if headscale_tls_mode == 'letsencrypt' %}
+{{ host }} {
+  {% if headscale_acme_email | length > 0 %}
+  email {{ headscale_acme_email }}
+  {% endif %}
+
+  @headplane path /admin*
+  respond @headplane 404
+
+  # transport http versions 1.1 is required for the Tailscale noise protocol
+  # (POST /ts2021 with Connection: upgrade) and for the embedded DERP handler
+  # exposed at /derp. Caddy strips upgrade headers by default when using
+  # HTTP/2 to the backend.
+  # flush_interval -1 is required: without it Caddy buffers the streaming peer-map
+  # response and the Noise long-poll drops immediately, leaving nodes "offline".
+  reverse_proxy {{ headscale_listen_addr }} {
+    flush_interval -1
+    transport http {
+      versions 1.1
+    }
+  }
+}
+{% else %}
+{{ host }} {
+  tls internal
+
+  @headplane path /admin*
+  respond @headplane 404
+
+  # Same streaming requirement applies in internal-TLS mode for /ts2021 and /derp.
+  reverse_proxy {{ headscale_listen_addr }} {
+    flush_interval -1
+    transport http {
+      versions 1.1
+    }
+  }
+}
+{% endif %}

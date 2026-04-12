@@ -1,0 +1,50 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+terraform.tfvars
+*.tfvars
+state.json
+tf-grid-state.json
+deployment-tag
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# VPN / network configs / secrets
+*.conf
+*.key
+
+# Ansible
+ansible/.ansible/
+ansible/inventory/*.json
+ansible/inventory/*.crt
+ansible/inventory/*.cache
+ansible/inventory/__pycache__/
+ansible/inventory/headplane-api-key.txt
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Web UI — job logs (per-environment, gitignored like other env runtime files)
+environments/*/.ui-logs/
+
+# OS/editor
+.DS_Store
+.vscode/
+
+# Local-only helper scripts
+scripts/local/
+
+# Per-environment directories — only environments/example/ is committed.
+# Real environments (prod, test, staging, etc.) contain site-specific config
+# and are excluded from version control. Create yours by copying example/:
+#   cp -r environments/example environments/prod
+environments/*
+!environments/example/

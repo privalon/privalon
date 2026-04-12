@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+OUTPUT_FILE="{{ observability_health_output_path }}"
+TMP_FILE="${OUTPUT_FILE}.tmp"
+NODE_NAME="{{ inventory_hostname }}"
+
+mkdir -p "$(dirname "${OUTPUT_FILE}")"
+
+run_command_check() {
+  local command_text="$1"
+  if timeout {{ observability_health_check_timeout_seconds }} /bin/bash -lc "$command_text" >/dev/null 2>&1; then
+    echo 1
+  else
+    echo 0
+  fi
+}
+
+run_docker_check() {
+  local container_name="$1"
+  python3 - <<'PY' "$container_name"
+import json
+import subprocess
+import sys
+
+container = sys.argv[1]
+result = subprocess.run(
+    ["docker", "inspect", container],
+    capture_output=True,
+    text=True,
+)
+if result.returncode != 0:
+    print(0)
+    raise SystemExit(0)
+
+data = json.loads(result.stdout)[0]
+state = data.get("State") or {}
+running = bool(state.get("Running"))
+health = state.get("Health") or {}
+health_status = (health.get("Status") or "").strip().lower()
+
+if running and (not health_status or health_status == "healthy"):
+    print(1)
+else:
+    print(0)
+PY
+}
+
+timestamp="$(date +%s)"
+
+cat > "${TMP_FILE}" <<'METRICS'
+# HELP blueprint_service_health Local service health check status (1=healthy, 0=unhealthy)
+# TYPE blueprint_service_health gauge
+# HELP blueprint_service_health_last_run_timestamp Unix timestamp of the last local service health check
+# TYPE blueprint_service_health_last_run_timestamp gauge
+METRICS
+
+{% for service in observability_host_services | default([]) %}
+{% for check in service.health_checks.local | default([]) %}
+status="0"
+{% if check.type == 'command' %}
+status="$(run_command_check {{ check.command | quote }})"
+{% elif check.type == 'docker' %}
+status="$(run_docker_check {{ check.container | quote }})"
+{% endif %}
+printf 'blueprint_service_health{env="{{ blueprint_env | default('prod') }}",service="{{ service.service_name }}",check="{{ check.name }}",node="%s",role="{{ service.role_label | default(service.host_groups | default(['all']) | first) }}",scope="local"} %s\n' "${NODE_NAME}" "${status}" >> "${TMP_FILE}"
+printf 'blueprint_service_health_last_run_timestamp{env="{{ blueprint_env | default('prod') }}",service="{{ service.service_name }}",check="{{ check.name }}",node="%s",role="{{ service.role_label | default(service.host_groups | default(['all']) | first) }}",scope="local"} %s\n' "${NODE_NAME}" "${timestamp}" >> "${TMP_FILE}"
+
+{% endfor %}
+{% endfor %}
+
+mv "${TMP_FILE}" "${OUTPUT_FILE}"

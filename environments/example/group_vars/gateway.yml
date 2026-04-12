@@ -1,0 +1,30 @@
+---
+# Environment — gateway routing overrides.
+#
+# Commit this file.
+# Add one entry per public-facing service. All domains must have A records
+# pointing to the gateway public IP before Ansible runs.
+#
+# Preferred schema: one upstream per public service.
+# The final hostname is <name>.<base_domain>.
+# gateway_services:
+#   - name: app
+#     upstream_host: app-vm          # Ansible inventory hostname (VM names use -vm)
+#     upstream_port: 3000
+#   - name: docs
+#     upstream_host: docs-vm
+#     upstream_port: 8080
+#
+# Legacy schema remains supported for old environments.
+# gateway_domains:
+#   - "app.yourdomain.com"
+# gateway_upstream_host: app-vm
+# gateway_upstream_port: 3000
+
+# ── DNS automation: gateway subdomains ─────────────────────────────────
+# List of subdomains that should point to the gateway public IP.
+# Used by scripts/helpers/dns-setup.sh when NAMECHEAP_API_KEY is set.
+# If omitted, deploy.sh derives subdomains from gateway_services names automatically.
+# Each entry creates an A record: <subdomain>.<base_domain> → gateway IP.
+# gateway_subdomains: []
+{}

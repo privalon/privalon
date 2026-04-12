@@ -1,0 +1,592 @@
+---
+- name: Attempt restore from backup (tailscale)
+  ansible.builtin.include_role:
+    name: backup
+    tasks_from: restore
+  vars:
+    backup_service_name: "tailscale"
+  when:
+    - backup_restore_enabled | default(true)
+    - tailscale_restore_state | default(true)
+
+- name: Ensure Debian/Ubuntu prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+    state: present
+    update_cache: true
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Add Tailscale apt repository key
+  ansible.builtin.get_url:
+    url: "https://pkgs.tailscale.com/stable/ubuntu/{{ ansible_facts.distribution_release }}.noarmor.gpg"
+    dest: /usr/share/keyrings/tailscale-archive-keyring.gpg
+    mode: "0644"
+    force: true
+    timeout: 30
+  register: _tailscale_repo_key
+  retries: 5
+  delay: 10
+  until: _tailscale_repo_key is succeeded
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Add Tailscale apt repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/tailscale.list
+    mode: "0644"
+    content: |
+      deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg] https://pkgs.tailscale.com/stable/ubuntu {{ ansible_facts.distribution_release }} main
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Install Tailscale
+  ansible.builtin.apt:
+    name:
+      - tailscale
+    state: present
+    update_cache: true
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Ensure tailscaled runtime directory exists
+  ansible.builtin.file:
+    path: /var/lib/tailscale
+    state: directory
+    mode: "0755"
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Install tailscaled startup wrapper with explicit CA paths
+  ansible.builtin.copy:
+    dest: /usr/local/bin/tailscaled-start
+    mode: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+      export SSL_CERT_DIR=/etc/ssl/certs
+      # Keep --port aligned with tailscale_udp_port and the firewall role.
+      # Using a random UDP port here breaks client-initiated peer sessions on
+      # public nodes because UFW only permits the pinned Tailscale port.
+      exec tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/var/run/tailscale/tailscaled.sock --port={{ tailscale_udp_port }}
+  register: _tailscaled_wrapper
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Install zinit config for tailscaled
+  ansible.builtin.copy:
+    dest: /etc/zinit/tailscaled.yaml
+    mode: "0644"
+    content: |
+      exec: /usr/local/bin/tailscaled-start
+  register: _tailscaled_zinit
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Restart tailscaled to pick up updated wrapper/config (best-effort)
+  # Only restart when the wrapper or zinit config actually changed — skipping this on
+  # --no-destroy runs (where files are unchanged) avoids the async SSH hang that occurs
+  # when the SSH connection is over the Tailscale tunnel that gets killed by the restart.
+  # nohup+& fully detaches so the SSH session can close before zinit stop completes.
+  ansible.builtin.shell: |
+    nohup bash -c '
+      sleep 1
+      timeout 20 zinit stop tailscaled 2>/dev/null || true
+      zinit monitor tailscaled 2>/dev/null || true
+      timeout 10 zinit start tailscaled 2>/dev/null || true
+    ' </dev/null >/dev/null 2>&1 &
+  args:
+    executable: /bin/bash
+  changed_when: false
+  failed_when: false
+  when:
+    - ansible_facts.os_family == 'Debian'
+    - (_tailscaled_wrapper is changed) or (_tailscaled_zinit is changed)
+
+- name: Wait for tailscale socket
+  ansible.builtin.wait_for:
+    path: /var/run/tailscale/tailscaled.sock
+    timeout: 60
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Determine desired auth key
+  ansible.builtin.set_fact:
+    _tailscale_authkey_effective: >-
+      {{
+        (tailscale_authkey | default('') | trim) if (tailscale_authkey | default('') | trim) != "" else
+        (
+          (
+            (hostvars[groups['control'][0]].headscale_authkeys | default({})).get('db', '')
+            if ('tag:db' in (tailscale_tags | default([])))
+            else
+            (
+              (hostvars[groups['control'][0]].headscale_authkeys | default({})).get('backup', '')
+              if ('tag:backup' in (tailscale_tags | default([])))
+              else
+              (hostvars[groups['control'][0]].headscale_authkeys | default({})).get('servers', '')
+            )
+          )
+        )
+      }}
+  when: tailscale_use_headscale_preauthkeys
+  no_log: true
+
+- name: Fail if effective auth key is empty
+  ansible.builtin.fail:
+    msg: >-
+      tailscale_use_headscale_preauthkeys is true but no auth key was available.
+      Ensure the control plane (Headscale) role successfully created preauth keys.
+  when:
+    - tailscale_use_headscale_preauthkeys
+    - (_tailscale_authkey_effective | default('') | trim) == ''
+
+- name: Fail if login server is not set
+  ansible.builtin.fail:
+    msg: "tailscale_login_server is empty; set headscale_url in control plane vars (e.g. https://headscale.example.com)."
+  when: (tailscale_login_server | trim) == ""
+
+# Short-circuit: skip the expensive join if tailscale is already running and has an IP.
+# Unhealthy nodes go through an explicit --reset recovery path so stale local state
+# cannot block re-joins with "mention all non-default flags" or similar errors.
+- name: Install Caddy internal root CA cert into system trust store
+  ansible.builtin.copy:
+    content: "{{ hostvars[groups['control'][0]].caddy_root_ca_cert }}"
+    dest: /usr/local/share/ca-certificates/caddy-local-ca.crt
+    mode: "0644"
+  register: _tailscale_ca_cert
+  when: (hostvars[groups['control'][0]].caddy_root_ca_cert | default('')) != ''
+  notify: Update CA certificates
+
+- name: Flush handlers (update-ca-certificates before tailscale up)
+  ansible.builtin.meta: flush_handlers
+
+- name: Restart tailscaled after CA trust update (best-effort)
+  # Only runs when the CA cert was actually installed (handler fired).
+  # nohup+& fully detaches so the SSH session (possibly over Tailscale) can close
+  # safely before zinit stop completes and kills the tunnel.
+  ansible.builtin.shell: |
+    nohup bash -c '
+      sleep 1
+      timeout 20 zinit stop tailscaled 2>/dev/null || true
+      zinit monitor tailscaled 2>/dev/null || true
+      timeout 10 zinit start tailscaled 2>/dev/null || true
+    ' </dev/null >/dev/null 2>&1 &
+  args:
+    executable: /bin/bash
+  changed_when: false
+  failed_when: false
+  when:
+    - ansible_facts.os_family == 'Debian'
+    - _tailscale_ca_cert is defined
+    - _tailscale_ca_cert is changed
+
+- name: Wait for tailscale socket after CA trust update
+  ansible.builtin.wait_for:
+    path: /var/run/tailscale/tailscaled.sock
+    timeout: 60
+  when:
+    - ansible_facts.os_family == 'Debian'
+    - _tailscale_ca_cert is defined
+    - _tailscale_ca_cert is changed
+
+- name: Check if Tailscale is already running and healthy
+  ansible.builtin.shell: |
+    set -euo pipefail
+    state="$(tailscale status --json 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("BackendState","Stopped"))' || echo Stopped)"
+    ip="$(tailscale ip -4 2>/dev/null | head -n1 | tr -d '[:space:]' || true)"
+    [[ "$state" == "Running" && -n "$ip" ]]
+  args:
+    executable: /bin/bash
+  register: tailscale_already_healthy
+  changed_when: false
+  failed_when: false
+
+- name: Derive normalized tailscale hostname
+  ansible.builtin.set_fact:
+    _tailscale_hostname_effective: >-
+      {{
+        inventory_hostname | lower
+        | regex_replace('[^a-z0-9-]', '-')
+        | regex_replace('-+', '-')
+        | regex_replace('^-|-$', '')
+      }}
+
+- name: Check whether node is registered in Headscale
+  ansible.builtin.shell: |
+    set -euo pipefail
+    nodes_json="$(docker exec headscale headscale nodes list --output json 2>/dev/null || true)"
+    TS_HEADSCALE_NODES_JSON="$nodes_json" python3 - <<'PY'
+    import json
+    import os
+
+    hostname = os.environ["TS_HOSTNAME"]
+    raw = os.environ.get("TS_HEADSCALE_NODES_JSON", "")
+
+    try:
+        nodes = json.loads(raw) if raw.strip() else []
+    except Exception:
+        raise SystemExit(1)
+
+    for node in nodes:
+        node_name = str(node.get("name") or node.get("given_name") or node.get("hostname") or "").strip()
+        if node_name == hostname:
+            raise SystemExit(0)
+
+    raise SystemExit(1)
+    PY
+  args:
+    executable: /bin/bash
+  environment:
+    TS_HOSTNAME: "{{ _tailscale_hostname_effective }}"
+  delegate_to: "{{ groups['control'][0] }}"
+  register: _tailscale_headscale_registration
+  changed_when: false
+  failed_when: false
+
+- name: Read local Headscale noise key fingerprint marker
+  ansible.builtin.slurp:
+    src: /var/lib/tailscale/headscale-noise-key.sha256
+  register: _tailscale_headscale_noise_key_marker
+  failed_when: false
+
+- name: Derive Headscale noise key fingerprints
+  ansible.builtin.set_fact:
+    _tailscale_headscale_noise_key_current: "{{ hostvars[groups['control'][0]].headscale_noise_private_key_sha256 | default('') | trim }}"
+    _tailscale_headscale_noise_key_previous: >-
+      {{
+        (_tailscale_headscale_noise_key_marker.content | default('') | b64decode | trim)
+        if (_tailscale_headscale_noise_key_marker is defined and _tailscale_headscale_noise_key_marker.content is defined)
+        else ''
+      }}
+
+- name: Decide whether tailscale reset is required
+  ansible.builtin.set_fact:
+    tailscale_needs_reset: >-
+      {{
+        (tailscale_already_healthy.rc != 0)
+        or (_tailscale_headscale_registration.rc | default(1) != 0)
+        or (
+          (_tailscale_headscale_noise_key_current | length > 0)
+          and (_tailscale_headscale_noise_key_previous | length > 0)
+          and (_tailscale_headscale_noise_key_current != _tailscale_headscale_noise_key_previous)
+        )
+      }}
+
+- name: Wait for headscale HTTPS to be reachable before joining tailnet
+  # Caddy may still be completing the Let's Encrypt ACME challenge after a fresh deploy.
+  # tailscale up validates TLS strictly, so we must wait until a valid cert is in place.
+  # For letsencrypt mode validate_certs=true ensures the health check only passes once
+  # the real cert is issued; for internal (self-signed) mode we skip cert validation.
+  # Allow up to 15 minutes (90 × 10s) to cover slow ACME challenges.
+  ansible.builtin.uri:
+    url: "{{ tailscale_login_server }}/health"
+    validate_certs: "{{ headscale_tls_mode | default('internal') != 'internal' }}"
+    status_code: [200]
+    timeout: 10
+  register: _headscale_health_check
+  retries: 90
+  delay: 10
+  until: _headscale_health_check.status == 200
+  when: tailscale_needs_reset
+  failed_when: false
+
+- name: Run tailscale up with --reset for unhealthy nodes
+  ansible.builtin.shell: |
+    set -euo pipefail
+    # Build the command as an array so auth keys and optional args are passed exactly.
+    # Only unhealthy nodes reach this task, so using --reset here is intentional.
+    cmd=(tailscale up --login-server "${TS_LOGIN_SERVER}" --hostname "${TS_HOSTNAME}")
+    cmd+=(--reset)
+
+    if [[ -n "${TS_AUTHKEY:-}" ]]; then
+      cmd+=(--authkey "${TS_AUTHKEY}")
+    fi
+
+    if [[ -n "${TS_EXTRA_ARGS:-}" ]]; then
+      read -r -a extra_args <<< "${TS_EXTRA_ARGS}"
+      cmd+=("${extra_args[@]}")
+    fi
+
+    timeout 300 "${cmd[@]}"
+  args:
+    executable: /bin/bash
+  environment:
+    TS_AUTHKEY: "{{ _tailscale_authkey_effective | default('') }}"
+    TS_LOGIN_SERVER: "{{ tailscale_login_server }}"
+    TS_HOSTNAME: "{{ _tailscale_hostname_effective }}"
+    TS_EXTRA_ARGS: >-
+      {{
+        (
+          (['--advertise-exit-node'] if tailscale_advertise_exit_node else [])
+          + (
+            ['--advertise-tags', (tailscale_tags | default([]) | join(','))]
+            if ((not tailscale_use_headscale_preauthkeys) and ((tailscale_tags | default([]) | length) > 0))
+            else []
+          )
+          + (tailscale_extra_args | default([]))
+        ) | join(' ')
+      }}
+  register: tailscale_up_reset
+  changed_when: "'Success.' in (tailscale_up_reset.stdout | default(''))"
+  failed_when: tailscale_up_reset.rc != 0 and tailscale_up_reset.rc != 124
+  no_log: true
+  when: tailscale_needs_reset
+
+- name: Fail if tailscale up timed out during reset recovery
+  ansible.builtin.fail:
+    msg: >-
+      tailscale up timed out after 300s during reset recovery.
+      Check that {{ tailscale_login_server }} is reachable from this host
+      (tcp/443) and that the preauth key has not expired.
+  when:
+    - tailscale_needs_reset
+    - tailscale_up_reset is defined
+    - tailscale_up_reset.rc is defined
+    - tailscale_up_reset.rc == 124
+
+- name: Persist current Headscale noise key fingerprint marker
+  ansible.builtin.copy:
+    dest: /var/lib/tailscale/headscale-noise-key.sha256
+    mode: "0600"
+    content: "{{ _tailscale_headscale_noise_key_current }}\n"
+  when: (_tailscale_headscale_noise_key_current | length) > 0
+
+- name: Detect whether Headscale node rename is required
+  ansible.builtin.shell: |
+    set -euo pipefail
+    nodes_json="$(docker exec headscale headscale nodes list --output json 2>/dev/null || true)"
+    TS_HEADSCALE_NODES_JSON="$nodes_json" python3 - <<'PY'
+    import json
+    import os
+
+    hostname = os.environ["TS_HOSTNAME"]
+    raw = os.environ.get("TS_HEADSCALE_NODES_JSON", "")
+
+    try:
+        nodes = json.loads(raw) if raw.strip() else []
+    except Exception:
+        raise SystemExit(0)
+
+    for node in nodes:
+        node_name = str(node.get("name") or "").strip()
+        given_name = str(node.get("given_name") or "").strip()
+        node_id = node.get("id")
+        if node_name == hostname or given_name == hostname:
+            if node_id is not None and given_name != hostname:
+                print(node_id)
+            raise SystemExit(0)
+
+    raise SystemExit(0)
+    PY
+  args:
+    executable: /bin/bash
+  environment:
+    TS_HOSTNAME: "{{ _tailscale_hostname_effective }}"
+  delegate_to: "{{ groups['control'][0] }}"
+  register: _tailscale_headscale_rename_id
+  changed_when: false
+  failed_when: false
+
+- name: Rename Headscale node to canonical hostname
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - headscale
+      - headscale
+      - nodes
+      - rename
+      - --identifier
+      - "{{ _tailscale_headscale_rename_id.stdout | trim }}"
+      - "{{ _tailscale_hostname_effective }}"
+  delegate_to: "{{ groups['control'][0] }}"
+  register: _tailscale_headscale_rename
+  changed_when: _tailscale_headscale_rename.rc == 0
+  when: (_tailscale_headscale_rename_id.stdout | default('') | trim) != ''
+
+- name: Check whether exit-node route approval is required
+  ansible.builtin.shell: |
+    set -euo pipefail
+
+    for _ in $(seq 1 {{ tailscale_exit_node_route_approval_retries | int }}); do
+      set +e
+      nodes_json="$(docker exec headscale headscale nodes list --output json 2>/dev/null || true)"
+      route_status="$(TS_HEADSCALE_NODES_JSON="$nodes_json" python3 - <<'PY'
+    import json
+    import os
+
+    hostname = os.environ["TS_HOSTNAME"]
+    wanted = {"0.0.0.0/0", "::/0"}
+    raw = os.environ.get("TS_HEADSCALE_NODES_JSON", "")
+
+    try:
+        nodes = json.loads(raw) if raw.strip() else []
+    except Exception:
+        raise SystemExit(3)
+
+    for node in nodes:
+        node_name = str(node.get("name") or "").strip()
+        given_name = str(node.get("given_name") or "").strip()
+        if hostname not in {node_name, given_name}:
+            continue
+
+        available = set(node.get("available_routes") or [])
+        approved = set(node.get("approved_routes") or [])
+        node_id = node.get("id")
+
+        if node_id is None or not wanted.issubset(available):
+            raise SystemExit(2)
+
+        if wanted.issubset(approved):
+            raise SystemExit(0)
+
+        print(node_id)
+        raise SystemExit(1)
+
+    raise SystemExit(3)
+    PY
+      )"
+      route_status_rc=$?
+      set -e
+
+      if [[ "$route_status_rc" -eq 0 || "$route_status_rc" -eq 1 ]]; then
+        printf '%s' "$route_status"
+        exit "$route_status_rc"
+      fi
+
+      sleep {{ tailscale_exit_node_route_approval_delay_seconds | int }}
+    done
+
+    nodes_json="$(docker exec headscale headscale nodes list --output json 2>/dev/null || true)"
+    TS_HEADSCALE_NODES_JSON="$nodes_json" python3 - <<'PY' >&2
+    import json
+    import os
+
+    hostname = os.environ["TS_HOSTNAME"]
+    raw = os.environ.get("TS_HEADSCALE_NODES_JSON", "")
+
+    try:
+        nodes = json.loads(raw) if raw.strip() else []
+    except Exception:
+        print(f"Timed out waiting for exit-node routes for {hostname}; unable to parse Headscale node list")
+      raise SystemExit(0)
+
+    for node in nodes:
+        node_name = str(node.get("name") or "").strip()
+        given_name = str(node.get("given_name") or "").strip()
+        if hostname not in {node_name, given_name}:
+            continue
+
+        summary = {
+            "id": node.get("id"),
+            "name": node_name,
+            "given_name": given_name,
+            "available_routes": node.get("available_routes") or [],
+            "approved_routes": node.get("approved_routes") or [],
+            "online": node.get("online"),
+        }
+        print(json.dumps(summary, sort_keys=True))
+        raise SystemExit(0)
+
+    print(f"Timed out waiting for exit-node routes for {hostname}; node not found in Headscale output")
+    PY
+
+    exit 2
+  args:
+    executable: /bin/bash
+  environment:
+    TS_HOSTNAME: "{{ _tailscale_hostname_effective }}"
+  delegate_to: "{{ groups['control'][0] }}"
+  register: _tailscale_exit_node_route_status
+  changed_when: false
+  failed_when: _tailscale_exit_node_route_status.rc not in [0, 1]
+  when: tailscale_advertise_exit_node
+
+- name: Approve exit-node routes in Headscale
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - headscale
+      - headscale
+      - nodes
+      - approve-routes
+      - --identifier
+      - "{{ _tailscale_exit_node_route_status.stdout | trim }}"
+      - --routes
+      - 0.0.0.0/0,::/0
+  delegate_to: "{{ groups['control'][0] }}"
+  register: _tailscale_approve_exit_node_routes
+  changed_when: _tailscale_approve_exit_node_routes.rc == 0
+  when:
+    - tailscale_advertise_exit_node
+    - (_tailscale_exit_node_route_status.stdout | default('') | trim) != ''
+
+- name: Get Tailscale IPv4
+  ansible.builtin.command:
+    argv: ["tailscale", "ip", "-4"]
+  register: ts_ip4
+  changed_when: false
+  failed_when: false
+
+- name: Store tailscale_ip fact
+  ansible.builtin.set_fact:
+    tailscale_ip: "{{ (ts_ip4.stdout_lines | default([]) | first) | default('') }}"
+
+# Safety net: no matter what happened above, always ensure tailscaled is running
+# so a failed partial Ansible run never leaves the service in target:Down.
+- name: Ensure tailscaled is started (safety net)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    state="$(zinit status tailscaled 2>/dev/null | awk '/^state:/{print $2}' || true)"
+    target="$(zinit status tailscaled 2>/dev/null | awk '/^target:/{print $2}' || true)"
+    if [[ "${target}" == "Down" || "${state}" != "Running" ]]; then
+      zinit monitor tailscaled 2>/dev/null || true
+      zinit start tailscaled 2>/dev/null || true
+    fi
+  args:
+    executable: /bin/bash
+  changed_when: false
+  failed_when: false
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Persist tailscale IP mapping on controller (best-effort)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    python3 - <<'PY'
+    import json, os, fcntl
+
+    out_path = os.environ["OUT_PATH"]
+    host = os.environ["HOST"]
+    ip = os.environ["IP"]
+    try:
+      host = json.loads(host)
+      ip = json.loads(ip)
+    except Exception:
+      pass
+
+    if not ip:
+      raise SystemExit(0)
+
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    lock_path = out_path + ".lock"
+    with open(lock_path, "w") as lock_f:
+      fcntl.flock(lock_f, fcntl.LOCK_EX)
+      data = {}
+      if os.path.exists(out_path):
+        try:
+          with open(out_path, "r", encoding="utf-8") as f:
+            data = json.load(f) or {}
+        except Exception:
+          data = {}
+      data[str(host)] = str(ip)
+      with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, sort_keys=True)
+    PY
+  args:
+    executable: /bin/bash
+  environment:
+    OUT_PATH: "{{ tailscale_local_inventory_dir }}/tailscale-ips.json"
+    HOST: "{{ inventory_hostname | to_json }}"
+    IP: "{{ tailscale_ip | to_json }}"
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  failed_when: false

@@ -1,0 +1,120 @@
+{% set public_ns = namespace(services=[]) %}
+{% if gateway_services | default([]) | length > 0 %}
+{% for service in gateway_services %}
+{% set service_name = service.name | default('') | trim %}
+{% set service_domain = service_name %}
+{% if '.' not in service_name and (base_domain | default('') | trim) != '' %}
+{% set service_domain = service_name ~ '.' ~ base_domain %}
+{% endif %}
+{% set service_upstream_ip = (hostvars[service.upstream_host].tailscale_ip | default('')) %}
+{% set _ = public_ns.services.append({'domain': service_domain, 'upstream_host': service.upstream_host, 'upstream_port': service.upstream_port, 'upstream_ip': service_upstream_ip}) %}
+{% endfor %}
+{% elif gateway_domains | default([]) | length > 0 %}
+{% set legacy_upstream_ip = (hostvars[gateway_upstream_host].tailscale_ip | default('')) %}
+{% for domain in gateway_domains %}
+{% set _ = public_ns.services.append({'domain': domain, 'upstream_host': gateway_upstream_host, 'upstream_port': gateway_upstream_port, 'upstream_ip': legacy_upstream_ip}) %}
+{% endfor %}
+{% endif %}
+{% set monitoring_upstream_ip = (hostvars['monitoring-vm'].tailscale_ip | default('')) %}
+{% set internal_namecheap_enabled = ((headscale_magic_dns_base_domain | default('') | trim) != '' and (internal_service_tls_mode | default('internal')) == 'namecheap') %}
+{% set public_namecheap_enabled = ((public_service_tls_mode | default('letsencrypt')) == 'namecheap' and public_ns.services | length > 0) %}
+
+{% if public_ns.services | length > 0 and not public_namecheap_enabled %}
+{% for service in public_ns.services %}
+{{ service.domain }} {
+  {% if service.upstream_ip | trim != '' %}
+  reverse_proxy http://{{ service.upstream_ip }}:{{ service.upstream_port }}
+  {% else %}
+  respond "upstream {{ service.upstream_host }} has no tailscale_ip yet" 502
+  {% endif %}
+}
+{% endfor %}
+{% endif %}
+
+{% if public_namecheap_enabled %}
+*.{{ base_domain }} {
+  {% if admin_email | default('') | trim != '' %}
+  tls {{ admin_email }} {
+  {% else %}
+  tls {
+  {% endif %}
+    dns namecheap {
+      api_key {env.NAMECHEAP_API_KEY}
+      user {env.NAMECHEAP_API_USER}
+      api_endpoint https://api.namecheap.com/xml.response
+      client_ip {{ gateway_namecheap_client_ip_effective }}
+    }
+    resolvers {{ (internal_service_tls_namecheap_resolvers | default([])) | join(' ') }}
+    propagation_delay {{ internal_service_tls_namecheap_propagation_delay | default('2m') }}
+    propagation_timeout {{ internal_service_tls_namecheap_propagation_timeout | default('10m') }}
+  }
+
+  {% for service in public_ns.services %}
+  @public_service_{{ loop.index }} host {{ service.domain }}
+  handle @public_service_{{ loop.index }} {
+    {% if service.upstream_ip | trim != '' %}
+    reverse_proxy http://{{ service.upstream_ip }}:{{ service.upstream_port }}
+    {% else %}
+    respond "upstream {{ service.upstream_host }} has no tailscale_ip yet" 502
+    {% endif %}
+  }
+  {% endfor %}
+
+  handle {
+    respond "unknown public service under {{ base_domain }}" 404
+  }
+}
+{% endif %}
+
+{% if internal_namecheap_enabled %}
+*.{{ headscale_magic_dns_base_domain }} {
+  bind {{ tailscale_ip }}
+
+  {% if admin_email | default('') | trim != '' %}
+  tls {{ admin_email }} {
+  {% else %}
+  tls {
+  {% endif %}
+    dns namecheap {
+      api_key {env.NAMECHEAP_API_KEY}
+      user {env.NAMECHEAP_API_USER}
+      api_endpoint https://api.namecheap.com/xml.response
+      client_ip {{ gateway_namecheap_client_ip_effective }}
+    }
+    resolvers {{ (internal_service_tls_namecheap_resolvers | default([])) | join(' ') }}
+    propagation_delay {{ internal_service_tls_namecheap_propagation_delay | default('2m') }}
+    propagation_timeout {{ internal_service_tls_namecheap_propagation_timeout | default('10m') }}
+  }
+
+  {% if monitoring_upstream_ip | trim != '' %}
+  @grafana host grafana.{{ headscale_magic_dns_base_domain }}
+  handle @grafana {
+    reverse_proxy http://{{ monitoring_upstream_ip }}:3000
+  }
+
+  @prometheus host prometheus.{{ headscale_magic_dns_base_domain }}
+  handle @prometheus {
+    reverse_proxy http://{{ monitoring_upstream_ip }}:9090
+  }
+
+  {% if backup_enabled | default(false) %}
+  @backrest host backrest.{{ headscale_magic_dns_base_domain }}
+  handle @backrest {
+    reverse_proxy http://{{ monitoring_upstream_ip }}:9898
+  }
+  {% endif %}
+
+  handle {
+    respond "unknown internal service under {{ headscale_magic_dns_base_domain }}" 404
+  }
+  {% else %}
+  respond "monitoring-vm has no tailscale_ip yet" 502
+  {% endif %}
+}
+{% endif %}
+
+{% if public_ns.services | length == 0 and not internal_namecheap_enabled %}
+:80 {
+  respond "gateway up (configure gateway services)" 200
+}
+{% endif %}

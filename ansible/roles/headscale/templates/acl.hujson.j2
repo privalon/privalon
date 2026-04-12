@@ -1,0 +1,90 @@
+{
+  // Headscale ACL policy (HUJSON).
+  // Note: headscale v0.28+ expects user aliases to contain an "@".
+
+  "groups": {
+    "group:admins": ["user:{{ headscale_user }}"]
+  },
+
+  "tagOwners": {
+    "tag:servers": ["user:{{ headscale_user }}"],
+    "tag:db": ["user:{{ headscale_user }}"],
+    "tag:backup": ["user:{{ headscale_user }}"]
+  },
+
+  "acls": [
+    // Operator/dev access over tailnet to managed nodes (SSH + monitoring).
+    // Note: autogroup:member and group:admins are kept for forward compatibility,
+    // but Headscale v0.28 does not reliably include user-owned nodes as WireGuard
+    // peers when only those autogroup/group rules exist. The explicit user: rule
+    // below guarantees correct peer inclusion for the admin user's devices.
+    {
+      "action": "accept",
+      "src": ["autogroup:member"],
+      "dst": [
+        "tag:servers:22",
+        "tag:servers:80",
+        "tag:servers:443",
+        "tag:servers:3000",
+        "tag:servers:9090"
+      ]
+    },
+
+    {
+      "action": "accept",
+      "src": ["group:admins"],
+      "dst": [
+        "tag:servers:*",
+        "tag:db:*",
+        "tag:backup:*"
+      ]
+    },
+
+    // Explicit user rule — ensures Headscale v0.28 registers the admin user's
+    // devices as WireGuard peers on all tagged nodes (peer inclusion workaround).
+    {
+      "action": "accept",
+      "src": ["user:{{ headscale_user }}"],
+      "dst": [
+        "tag:servers:22",
+        "tag:servers:80",
+        "tag:servers:443",
+        "tag:servers:3000",
+        "tag:servers:9090",
+        "tag:db:*",
+        "tag:backup:*"
+      ]
+    },
+
+    // Allow managed clients to use the gateway exit node for full-tunnel internet access.
+    {
+      "action": "accept",
+      "src": [
+        "autogroup:member",
+        "group:admins",
+        "user:{{ headscale_user }}",
+        "tag:servers"
+      ],
+      "dst": ["autogroup:internet:*"]
+    },
+
+    // Operations: allow servers to manage all tagged hosts over the tailnet.
+    // This enables SSH-only-over-Tailscale after bootstrap.
+    {
+      "action": "accept",
+      "src": ["tag:servers"],
+      "dst": [
+        "tag:servers:*",
+        "tag:db:*",
+        "tag:backup:*"
+      ]
+    },
+
+    // servers -> db (example port 5432)
+    {
+      "action": "accept",
+      "src": ["tag:servers"],
+      "dst": ["tag:db:5432"]
+    }
+  ]
+}

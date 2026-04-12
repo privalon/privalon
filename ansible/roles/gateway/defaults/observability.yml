@@ -1,0 +1,20 @@
+---
+observability:
+  services:
+    - service_name: caddy
+      role_label: gateway
+      host_groups: [gateway]
+      logs:
+        docker_containers: [caddy]
+        files: []
+        journald_units: []
+      health_checks:
+        local:
+          - name: container-running
+            type: docker
+            container: caddy
+        remote:
+          - name: public-https
+            type: tcp
+            target: gateway_public_ip
+            port: 443

@@ -1,0 +1,686 @@
+---
+- name: Attempt restore from backup (monitoring)
+  ansible.builtin.include_role:
+    name: backup
+    tasks_from: restore
+  vars:
+    backup_service_name: "monitoring"
+  when: backup_restore_enabled | default(true)
+
+- name: Determine local Tailscale IPv4 (fallback when tailscale role facts are unavailable)
+  ansible.builtin.command:
+    argv: ["tailscale", "ip", "-4"]
+  register: tailscale_ip_cmd
+  changed_when: false
+  failed_when: false
+
+- name: Set tailscale_ip fact from local command when missing
+  ansible.builtin.set_fact:
+    tailscale_ip: "{{ (tailscale_ip_cmd.stdout_lines | default([]) | first | default('')) | trim }}"
+  when: (tailscale_ip | default('') | trim) == ''
+
+- name: Fail if tailscale_ip is not available
+  ansible.builtin.fail:
+    msg: "tailscale_ip is empty; ensure the tailscale role ran successfully first."
+  when: (tailscale_ip | default('') | trim) == ""
+
+- name: Install Docker (Debian/Ubuntu)
+  ansible.builtin.apt:
+    name:
+      - docker.io
+    state: present
+    update_cache: true
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Configure Docker storage driver (ThreeFold VM overlay compat)
+  # ThreeFold Grid VMs use VirtioFS as the root filesystem, which does not
+  # support the overlay mount options (index=off) used by the overlay2/containerd
+  # snapshotter.  Use vfs by default; it works on any filesystem type.
+  # Override with docker_storage_driver in group_vars if the node supports overlay2.
+  ansible.builtin.copy:
+    dest: /etc/docker/daemon.json
+    mode: "0644"
+    content: |
+      {"storage-driver": "{{ docker_storage_driver | default('vfs') }}"}
+  register: _docker_daemon_json
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Ensure dockerd is running (zinit)
+  ansible.builtin.copy:
+    dest: /etc/zinit/dockerd.yaml
+    mode: "0644"
+    content: |
+      exec: dockerd -H unix:///var/run/docker.sock
+  register: _dockerd_zinit_cfg
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Restart dockerd when config changed
+  ansible.builtin.shell: |
+    zinit stop dockerd 2>/dev/null || true
+    zinit forget dockerd 2>/dev/null || true
+    sleep 1
+    kill -9 $(pgrep dockerd) 2>/dev/null || true
+    sleep 1
+    rm -rf /var/lib/docker/image /var/lib/docker/vfs 2>/dev/null || true
+    zinit monitor dockerd 2>/dev/null || true
+    zinit start dockerd 2>/dev/null || true
+    exit 0
+  when:
+    - ansible_facts.os_family == 'Debian'
+    - _docker_daemon_json is changed or _dockerd_zinit_cfg is changed
+
+- name: Start dockerd (zinit)
+  ansible.builtin.command:
+    argv: ["zinit", "monitor", "dockerd"]
+  register: dockerd_zinit
+  changed_when: dockerd_zinit.rc == 0
+  failed_when: false
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Wait for Docker socket
+  ansible.builtin.wait_for:
+    path: /var/run/docker.sock
+    timeout: 60
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Create monitoring directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - /opt/monitoring/prometheus
+    - /opt/monitoring/blackbox
+    - /opt/monitoring/archive
+    - /opt/grafana/provisioning/datasources
+    - /opt/grafana/provisioning/dashboards
+    - /opt/grafana/dashboards
+    - /opt/grafana/data
+    - /opt/loki
+    - /opt/loki/chunks
+    - /opt/loki/index
+    - /opt/loki/index_cache
+    - /opt/loki/compactor
+    - /opt/loki/rules
+
+- name: Ensure Grafana data directory ownership for container user
+  ansible.builtin.file:
+    path: /opt/grafana/data
+    state: directory
+    owner: "472"
+    group: "472"
+    mode: "0755"
+
+- name: Ensure Loki data directory ownership for container user
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "10001"
+    group: "10001"
+    mode: "0777"
+  loop:
+    - /opt/loki
+    - /opt/loki/chunks
+    - /opt/loki/index
+    - /opt/loki/index_cache
+    - /opt/loki/compactor
+    - /opt/loki/rules
+
+- name: Load tailscale IP map from local inventory (for partial / --limit runs)
+  ansible.builtin.shell:
+    cmd: "cat \"${TAILSCALE_IPS_JSON}\" 2>/dev/null || echo '{}'"
+  register: _ts_ips_raw
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  failed_when: false
+
+- name: Set prometheus_tailscale_ip_map fact from inventory JSON
+  ansible.builtin.set_fact:
+    prometheus_tailscale_ip_map: "{{ _ts_ips_raw.stdout | default('{}') | from_json }}"
+
+- name: Find observability manifest files
+  ansible.builtin.find:
+    paths: "{{ role_path }}/../"
+    patterns: observability.yml
+    recurse: true
+    file_type: file
+  delegate_to: localhost
+  become: false
+  register: _monitoring_observability_manifest_files
+
+- name: Discover observability manifests from roles
+  ansible.builtin.include_vars:
+    file: "{{ item.path }}"
+    name: "_monitoring_observability_manifest_{{ idx }}"
+  loop: "{{ _monitoring_observability_manifest_files.files | default([]) }}"
+  loop_control:
+    index_var: idx
+    label: "{{ item.path | basename }}"
+  when: item.path is search('/defaults/observability.yml$')
+  register: _monitoring_observability_manifests_raw
+
+- name: Build monitoring observability manifest catalog
+  ansible.builtin.set_fact:
+    prometheus_observability_catalog: >-
+      {{
+        _monitoring_observability_manifests_raw.results
+        | default([])
+        | selectattr('ansible_facts', 'defined')
+        | map(attribute='ansible_facts')
+        | map('dict2items')
+        | map('first')
+        | map(attribute='value')
+        | map(attribute='observability')
+        | map(attribute='services')
+        | sum(start=[])
+      }}
+
+- name: Select logging archive backend
+  ansible.builtin.set_fact:
+    logging_archive_backend: >-
+      {{
+        (
+          backup_backends
+          | default([])
+          | selectattr('name', 'equalto', logging_archive_backend_name | default('primary'))
+          | list
+          | first
+        ) | default({})
+      }}
+  when: logging_archive_enabled | default(false)
+
+- name: Render Prometheus config (scrape node exporter over Tailscale)
+  ansible.builtin.template:
+    src: prometheus.yml.j2
+    dest: /opt/monitoring/prometheus/prometheus.yml
+    mode: "0644"
+
+- name: Install Prometheus backup alert rules
+  ansible.builtin.copy:
+    src: backup-alerts.yml
+    dest: /opt/monitoring/prometheus/backup-alerts.yml
+    mode: "0644"
+
+- name: Install Prometheus observability alert rules
+  ansible.builtin.copy:
+    src: service-observability-alerts.yml
+    dest: /opt/monitoring/prometheus/service-observability-alerts.yml
+    mode: "0644"
+
+- name: Render Loki config
+  ansible.builtin.template:
+    src: loki-config.yml.j2
+    dest: /opt/loki/config.yml
+    mode: "0644"
+
+- name: Render Blackbox exporter config
+  ansible.builtin.template:
+    src: blackbox.yml.j2
+    dest: /opt/monitoring/blackbox/blackbox.yml
+    mode: "0644"
+
+- name: Fail if logging archive backend is missing
+  ansible.builtin.fail:
+    msg: >-
+      logging_archive_enabled=true requires a configured backup backend named
+      {{ logging_archive_backend_name | default('primary') }}.
+  when:
+    - logging_archive_enabled | default(false)
+    - (logging_archive_backend | default({})) == {}
+
+- name: Render Loki archive export job
+  ansible.builtin.template:
+    src: archive-loki-logs.py.j2
+    dest: /opt/monitoring/archive/archive-loki-logs.py
+    mode: "0755"
+  when: logging_archive_enabled | default(false)
+
+- name: Install Grafana provisioning (datasource)
+  ansible.builtin.template:
+    src: grafana-datasource.yml.j2
+    dest: /opt/grafana/provisioning/datasources/prometheus.yml
+    mode: "0644"
+
+- name: Install Grafana provisioning (dashboard provider)
+  ansible.builtin.copy:
+    src: grafana-provisioning/dashboards/provider.yml
+    dest: /opt/grafana/provisioning/dashboards/provider.yml
+    mode: "0644"
+
+- name: Install Grafana dashboard
+  ansible.builtin.copy:
+    src: grafana-dashboards/server-health.json
+    dest: /opt/grafana/dashboards/server-health.json
+    mode: "0644"
+
+- name: Install Grafana service health dashboard
+  ansible.builtin.copy:
+    src: grafana-dashboards/service-health.json
+    dest: /opt/grafana/dashboards/service-health.json
+    mode: "0644"
+
+- name: Install Grafana logs overview dashboard
+  ansible.builtin.copy:
+    src: grafana-dashboards/logs-overview.json
+    dest: /opt/grafana/dashboards/logs-overview.json
+    mode: "0644"
+
+# ── Auth: bcrypt hash for Prometheus and Backrest ──────────────────────────
+
+- name: Install monitoring support packages
+  ansible.builtin.apt:
+    name:
+      - python3-bcrypt
+      - python3-boto3
+      - cron
+    state: present
+    update_cache: true
+
+- name: Ensure cron daemon is running for archive jobs (zinit)
+  ansible.builtin.copy:
+    dest: /etc/zinit/crond.yaml
+    content: |
+      exec: /usr/sbin/cron -f
+    mode: "0644"
+  register: monitoring_crond_zinit
+  when: logging_archive_enabled | default(false)
+
+- name: Monitor crond via zinit for archive jobs
+  ansible.builtin.command:
+    argv: ["zinit", "monitor", "crond"]
+  when:
+    - logging_archive_enabled | default(false)
+    - monitoring_crond_zinit is changed
+  changed_when: true
+  failed_when: false
+
+- name: Ensure crond is running via zinit for archive jobs
+  ansible.builtin.shell: |
+    set -euo pipefail
+    state=$(zinit status crond 2>/dev/null | grep -oP '(?<=state: )\w+' || echo "unknown")
+    if [ "$state" != "Running" ]; then
+      zinit start crond 2>/dev/null || true
+    fi
+  args:
+    executable: /bin/bash
+  changed_when: false
+  when: logging_archive_enabled | default(false)
+
+- name: Generate services admin password bcrypt hash
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - "import bcrypt, os; pw = os.environ['SVC_PW'].encode(); print(bcrypt.hashpw(pw, bcrypt.gensalt(12)).decode())"
+  environment:
+    SVC_PW: "{{ services_admin_password }}"
+  register: _services_bcrypt_hash
+  changed_when: false
+  no_log: true
+
+- name: Generate Backrest-compatible password bcrypt hash
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - "import base64, bcrypt, os; pw = os.environ['SVC_PW'].encode(); hashed = bcrypt.hashpw(pw, bcrypt.gensalt(12)); print(base64.b64encode(hashed).decode())"
+  environment:
+    SVC_PW: "{{ services_admin_password }}"
+  register: _backrest_password_bcrypt_b64
+  changed_when: false
+  no_log: true
+
+- name: Render Prometheus web config (basic auth)
+  ansible.builtin.template:
+    src: prometheus-web.yml.j2
+    dest: /opt/monitoring/prometheus/web.yml
+    # Prometheus reads this as a non-root user inside the container. 0640 causes
+    # a crash-loop after restore/redeploy because the mounted file is unreadable.
+    mode: "0644"
+
+- name: Remove existing Prometheus container (to apply config/ports)
+  ansible.builtin.command:
+    argv: ["docker", "rm", "-f", "prometheus"]
+  register: prometheus_rm
+  changed_when: prometheus_rm.rc == 0
+  failed_when: false
+
+- name: Remove existing Loki container (to apply config/ports)
+  ansible.builtin.command:
+    argv: ["docker", "rm", "-f", "loki"]
+  register: loki_rm
+  changed_when: loki_rm.rc == 0
+  failed_when: false
+
+- name: Run Loki (Tailscale-only, host network for private log ingestion)
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - -d
+      - --name
+      - loki
+      - --restart
+      - unless-stopped
+      - --user
+      - 0:0
+      - --network
+      - host
+      - -v
+      - /opt/loki:/loki
+      - -v
+      - /opt/loki/config.yml:/etc/loki/local-config.yaml:ro
+      - grafana/loki:2.9.10
+      - -config.file=/etc/loki/local-config.yaml
+  register: loki_run
+  changed_when: loki_run.rc == 0
+
+- name: Wait for Loki to be ready
+  ansible.builtin.uri:
+    url: "http://{{ tailscale_ip }}:3100/ready"
+    return_content: false
+    status_code: 200
+  register: loki_ready
+  retries: 30
+  delay: 2
+  until: loki_ready.status == 200
+
+- name: Remove existing Blackbox exporter container (to apply config/ports)
+  ansible.builtin.command:
+    argv: ["docker", "rm", "-f", "blackbox-exporter"]
+  register: blackbox_rm
+  changed_when: blackbox_rm.rc == 0
+  failed_when: false
+
+- name: Run Blackbox exporter (Tailscale-only, host network)
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - -d
+      - --name
+      - blackbox-exporter
+      - --restart
+      - unless-stopped
+      - --network
+      - host
+      - -v
+      - /opt/monitoring/blackbox/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
+      - prom/blackbox-exporter:v0.25.0
+      - --config.file=/etc/blackbox_exporter/config.yml
+      - --web.listen-address={{ tailscale_ip }}:9115
+  register: blackbox_run
+  changed_when: blackbox_run.rc == 0
+
+- name: Wait for Blackbox exporter to be ready
+  ansible.builtin.uri:
+    url: "http://{{ tailscale_ip }}:9115/metrics"
+    return_content: false
+    status_code: 200
+  register: blackbox_ready
+  retries: 30
+  delay: 2
+  until: blackbox_ready.status == 200
+
+- name: Remove existing Prometheus container (to apply config/ports)
+  ansible.builtin.command:
+    argv: ["docker", "rm", "-f", "prometheus"]
+  register: prometheus_rm
+  changed_when: prometheus_rm.rc == 0
+  failed_when: false
+
+- name: Run Prometheus (Tailscale-only, host network for Tailscale access)
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - -d
+      - --name
+      - prometheus
+      - --restart
+      - unless-stopped
+      - --network
+      - host
+      - -v
+      - /opt/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - -v
+      - /opt/monitoring/prometheus/backup-alerts.yml:/etc/prometheus/backup-alerts.yml:ro
+      - -v
+      - /opt/monitoring/prometheus/service-observability-alerts.yml:/etc/prometheus/service-observability-alerts.yml:ro
+      - -v
+      - /opt/monitoring/prometheus/web.yml:/etc/prometheus/web.yml:ro
+      - prom/prometheus:latest
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.listen-address={{ tailscale_ip }}:9090
+      - --web.config.file=/etc/prometheus/web.yml
+  register: prometheus_run
+  changed_when: prometheus_run.rc == 0
+
+- name: Wait for Prometheus to be ready
+  ansible.builtin.uri:
+    url: "http://{{ tailscale_ip }}:9090/-/healthy"
+    user: "{{ services_admin_username }}"
+    password: "{{ services_admin_password }}"
+    force_basic_auth: true
+    return_content: false
+    status_code: 200
+  register: prometheus_ready
+  retries: 30
+  delay: 2
+  until: prometheus_ready.status == 200
+
+- name: Remove existing Grafana container (to apply config/ports)
+  ansible.builtin.command:
+    argv: ["docker", "rm", "-f", "grafana"]
+  register: grafana_rm
+  changed_when: grafana_rm.rc == 0
+  failed_when: false
+
+- name: Run Grafana (Tailscale-only, host network for Tailscale access)
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - -d
+      - --name
+      - grafana
+      - --restart
+      - unless-stopped
+      - --network
+      - host
+      - -e
+      - "GF_SECURITY_ADMIN_USER={{ grafana_admin_user }}"
+      - -e
+      - "GF_SECURITY_ADMIN_PASSWORD={{ grafana_admin_password }}"
+      - -e
+      - "GF_SERVER_HTTP_ADDR={{ tailscale_ip }}"
+      - -e
+      - "GF_SERVER_HTTP_PORT=3000"
+      - -v
+      - /opt/grafana/data:/var/lib/grafana
+      - -v
+      - /opt/grafana/provisioning:/etc/grafana/provisioning:ro
+      - -v
+      - /opt/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana/grafana:latest
+  register: grafana_run
+  changed_when: grafana_run.rc == 0
+
+- name: Wait for Grafana to be ready
+  ansible.builtin.wait_for:
+    host: "{{ tailscale_ip }}"
+    port: 3000
+    timeout: 60
+
+- name: Sync Grafana admin password via grafana-cli
+  ansible.builtin.command:
+    argv: ["docker", "exec", "grafana", "grafana-cli", "admin", "reset-admin-password", "{{ services_admin_password }}"]
+  changed_when: false
+  no_log: true
+
+- name: Install Loki archive cron job
+  ansible.builtin.cron:
+    name: archive-loki-logs
+    minute: "15"
+    hour: "1"
+    day: "*"
+    month: "*"
+    weekday: "*"
+    job: "/opt/monitoring/archive/archive-loki-logs.py >> /var/log/archive-loki-logs.log 2>&1"
+    user: root
+    state: present
+  when: logging_archive_enabled | default(false)
+
+# ── Backrest (Backup snapshot browser, Tailscale-only) ──
+
+- name: Create Backrest directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - /opt/backrest/config
+    - /opt/backrest/data
+    - /opt/backrest/cache
+  when: backup_enabled | default(false)
+
+- name: Remove existing Backrest container (if any)
+  ansible.builtin.command:
+    argv: ["docker", "rm", "-f", "backrest"]
+  register: backrest_rm
+  changed_when: backrest_rm.rc == 0
+  failed_when: false
+  when: backup_enabled | default(false)
+
+- name: Render Backrest config (auth + S3 repos)
+  ansible.builtin.template:
+    src: backrest-config.json.j2
+    dest: /opt/backrest/config/config.json
+    mode: "0600"
+  when: backup_enabled | default(false)
+
+- name: Run Backrest (Tailscale-only)
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - -d
+      - --name
+      - backrest
+      - --restart
+      - unless-stopped
+      - --network
+      - host
+      - -v
+      - /opt/backrest/config:/config
+      - -v
+      - /opt/backrest/data:/data
+      - -v
+      - /opt/backrest/cache:/cache
+      - -e
+      - "BACKREST_PORT=9898"
+      - -e
+      - "BACKREST_BIND_ADDRESS={{ tailscale_ip }}:9898"
+      - garethgeorge/backrest:latest
+  register: backrest_run
+  changed_when: backrest_run.rc == 0
+  when: backup_enabled | default(false)
+
+# ── Install backup Grafana dashboard ──
+
+- name: Install Grafana backup dashboard
+  ansible.builtin.copy:
+    src: grafana-dashboards/backup-overview.json
+    dest: /opt/grafana/dashboards/backup-overview.json
+    mode: "0644"
+  when: backup_enabled | default(false)
+
+# ── Service subdomain reverse proxy (grafana.in.X, prometheus.in.X, backrest.in.X) ──
+# Only active when headscale_magic_dns_base_domain is set. Caddy listens on the
+# Tailscale interface on port 80, routing by Host header to local service ports.
+# headscale DNS extra_records (added by the reconcile play in site.yml) make these
+# hostnames resolvable by every tailnet-connected device.
+
+- name: Remove monitoring Caddy container when internal PKI mode is disabled
+  ansible.builtin.command:
+    argv: ["docker", "rm", "-f", "monitoring-caddy"]
+  register: monitoring_caddy_rm_disabled
+  changed_when: monitoring_caddy_rm_disabled.rc == 0
+  failed_when: false
+  when:
+    - (headscale_magic_dns_base_domain | default('') | trim) == '' or (internal_service_tls_mode | default('internal')) != 'internal'
+
+- name: Create monitoring Caddy directory
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - /opt/monitoring-caddy
+    - /opt/monitoring-caddy/data
+  when:
+    - (headscale_magic_dns_base_domain | default('') | trim) != ''
+    - (internal_service_tls_mode | default('internal')) == 'internal'
+
+- name: Render monitoring Caddyfile (service subdomain routing)
+  ansible.builtin.template:
+    src: monitoring-Caddyfile.j2
+    dest: /opt/monitoring-caddy/Caddyfile
+    mode: "0644"
+  register: _monitoring_caddy_config
+  when:
+    - (headscale_magic_dns_base_domain | default('') | trim) != ''
+    - (internal_service_tls_mode | default('internal')) == 'internal'
+
+- name: Remove existing monitoring-caddy container (if any)
+  ansible.builtin.command:
+    argv: ["docker", "rm", "-f", "monitoring-caddy"]
+  register: monitoring_caddy_rm
+  changed_when: monitoring_caddy_rm.rc == 0
+  failed_when: false
+  when:
+    - (headscale_magic_dns_base_domain | default('') | trim) != ''
+    - (internal_service_tls_mode | default('internal')) == 'internal'
+
+- name: Run monitoring Caddy (service subdomain reverse proxy, Tailscale-only)
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - -d
+      - --name
+      - monitoring-caddy
+      - --restart
+      - unless-stopped
+      - --network
+      - host
+      - -v
+      - /opt/monitoring-caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - -v
+      - /opt/monitoring-caddy/data:/data
+      - caddy:2
+  register: monitoring_caddy_run
+  changed_when: monitoring_caddy_run.rc == 0
+  when:
+    - (headscale_magic_dns_base_domain | default('') | trim) != ''
+    - (internal_service_tls_mode | default('internal')) == 'internal'
+
+- name: Wait for Caddy to generate internal CA
+  ansible.builtin.pause:
+    seconds: 5
+  when:
+    - (headscale_magic_dns_base_domain | default('') | trim) != ''
+    - (internal_service_tls_mode | default('internal')) == 'internal'
+
+- name: Export Caddy internal CA cert for client trust
+  ansible.builtin.shell:
+    cmd: |
+      docker exec monitoring-caddy sh -c \
+        'cat /data/caddy/pki/authorities/local/root.crt' \
+      > /opt/monitoring-caddy/ca.crt 2>/dev/null || true
+  changed_when: false
+  when:
+    - (headscale_magic_dns_base_domain | default('') | trim) != ''
+    - (internal_service_tls_mode | default('internal')) == 'internal'

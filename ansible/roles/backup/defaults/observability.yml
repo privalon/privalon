@@ -1,0 +1,19 @@
+---
+observability:
+  services:
+    - service_name: backup
+      role_label: backup
+      enabled_var: backup_enabled
+      logs:
+        docker_containers: []
+        files:
+          - /var/log/backup-*.log
+          - /var/log/backup-summary.log
+          - /var/log/backup-drill.log
+        journald_units: []
+      health_checks:
+        local:
+          - name: recent-success
+            type: command
+            command: /usr/local/bin/check-blueprint-backup-health
+        remote: []

@@ -1,0 +1,29 @@
+groups:
+  - name: service-observability
+    rules:
+      - alert: BlueprintServiceLocalHealthFailed
+        expr: blueprint_service_health{scope="local"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Local health check failed for {{ $labels.service }} on {{ $labels.node }}"
+          description: "The local service health check {{ $labels.check }} for {{ $labels.service }} on {{ $labels.node }} is reporting unhealthy."
+
+      - alert: BlueprintRemoteProbeFailed
+        expr: probe_success{job=~"service_probe_.*"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Remote probe failed for {{ $labels.service }} on {{ $labels.node }}"
+          description: "The remote {{ $labels.probe_type }} probe {{ $labels.check }} for {{ $labels.service }} on {{ $labels.node }} is failing."
+
+      - alert: BlueprintAlloyDown
+        expr: up{job="alloy"} == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Alloy is down on {{ $labels.node }}"
+          description: "Prometheus cannot scrape Alloy metrics from {{ $labels.node }}, so log shipping may be stale."

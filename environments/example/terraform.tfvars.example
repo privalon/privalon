@@ -1,0 +1,49 @@
+# ═══════════════════════════════════════════════════════════════════════
+# Environment — Terraform variables (non-secret).
+# ═══════════════════════════════════════════════════════════════════════
+#
+# Setup:
+#   cp terraform.tfvars.example terraform.tfvars   # then edit
+#
+# Secrets (mnemonic, passwords, S3 keys) go in secrets.env, NOT here.
+# See secrets.env.example in the same directory.
+# ═══════════════════════════════════════════════════════════════════════
+
+# Which TFGrid network to deploy on: dev | qa | test | main
+# "test" is free for development; "main" costs real TFT.
+tfgrid_network = "test"
+
+# Unique deployment name on TFGrid.
+# Must differ across environments to prevent deployment conflicts.
+name = "myenv"
+
+# ── Node selection ─────────────────────────────────────────────────────
+# ThreeFold Grid has an auto-scheduler that picks nodes matching the
+# requested CPU/RAM/SSD. Set use_scheduler = true to use it.
+#
+# Why pin nodes?  The scheduler may place VMs on distant nodes, making
+# grid_network creation slow/flaky (provider timeout). Pinning VMs to
+# known-good nodes (same or nearby) makes deploys faster and more
+# reliable.  Find node IDs at https://dashboard.grid.tf/ → "Nodes".
+#
+# When use_scheduler = false, you MUST set gateway_node_id,
+# control_node_id, and node_id inside each workload.
+use_scheduler = true
+# gateway_node_id = 123
+# control_node_id = 456
+
+# ── Workload VMs (internal, no public IPv4) ────────────────────────────
+workloads = {
+  monitoring = {
+    # node_id    = 789   # required if use_scheduler = false
+    cpu       = 2
+    memory_mb = 4096
+    rootfs_mb = 16384
+  }
+}
+
+# ── SSH access ─────────────────────────────────────────────────────────
+# Public keys injected into every VM. Paste your key(s) here.
+ssh_public_keys = [
+  "ssh-ed25519 AAAA... your-key-comment",
+]

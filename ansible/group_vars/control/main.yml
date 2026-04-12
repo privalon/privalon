@@ -1,0 +1,7 @@
+---
+# Control plane runs Headscale + (optional) DERP + TLS termination.
+
+# headscale_url is defined in group_vars/all/main.yml
+
+# For local testing without a domain:
+# headscale_tls_mode: internal

@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Blueprint UI</title>
+  <link rel="stylesheet" href="/static/style.css?v=__STATIC_VERSION__">
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <span class="logo">&#9729; Blueprint UI</span>
+      <nav>
+        <button class="tab active" data-view="deploy">Deploy</button>
+        <button class="tab" data-view="configure">Configure</button>
+        <button class="tab" data-view="status">Status</button>
+        <button class="tab" data-view="environments">Environments</button>
+        <button class="tab" data-view="history">History</button>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+
+    <!-- ── Deploy ─────────────────────────────────────────────────────── -->
+    <div id="view-deploy" class="view">
+
+      <div id="status-bar" class="status-bar hidden"></div>
+
+      <section class="card deploy-form">
+        <h2>New Deployment</h2>
+        <div class="form-grid">
+          <div class="form-field">
+            <label for="env-select">Environment</label>
+            <select id="env-select"><option value="">Loading…</option></select>
+          </div>
+          <div class="form-field">
+            <label for="scope-select">Scope</label>
+            <select id="scope-select">
+              <option value="full">full — deploy everything</option>
+              <option value="gateway">gateway</option>
+              <option value="control">control</option>
+              <option value="dns">dns — update DNS records only</option>
+            </select>
+          </div>
+          <div class="form-field form-field-wide">
+            <label for="recreate-policy-select">Existing Infrastructure</label>
+            <select id="recreate-policy-select">
+              <option value="converge">Converge in place — pass --no-destroy</option>
+              <option value="destroy">Destroy and recreate first — pass --yes</option>
+            </select>
+            <span class="hint" id="recreate-policy-hint">Web UI jobs are non-interactive, so this preselects how deploy.sh answers the destroy prompt.</span>
+          </div>
+        </div>
+        <div class="form-field options-field">
+          <label>Options</label>
+          <div class="checkboxes">
+            <label><input type="checkbox" id="opt-no-restore"> <code>--no-restore</code> <span class="hint">skip backup restore on fresh deploy</span></label>
+            <label><input type="checkbox" id="opt-fresh-tailnet"> <code>--fresh-tailnet</code> <span class="hint">fresh Headscale DB plus fresh per-VM Tailscale state on destructive redeploy</span></label>
+            <label><input type="checkbox" id="opt-my-ip"> <code>--allow-ssh-from-my-ip</code> <span class="hint">temporarily allow SSH from your public IP</span></label>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button id="deploy-btn" class="btn-primary" disabled>Deploy</button>
+          <span id="deploy-error" class="error-msg hidden"></span>
+        </div>
+      </section>
+
+      <div id="job-panes"></div>
+
+    </div>
+
+    <!-- ── Status ─────────────────────────────────────────────────────── -->
+    <div id="view-status" class="view hidden">
+      <div class="config-header">
+        <h2>Status</h2>
+        <div class="form-field" style="flex-direction:row;align-items:center;gap:10px;">
+          <label for="status-env-select" style="white-space:nowrap">Environment:</label>
+          <select id="status-env-select" style="max-width:200px"></select>
+        </div>
+      </div>
+      <div id="status-content"><p class="muted">Select an environment above.</p></div>
+    </div>
+
+    <!-- ── Environments ───────────────────────────────────────────────── -->
+    <div id="view-environments" class="view hidden">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+        <h2 style="margin-bottom:0">Environments</h2>
+        <button class="btn-sm" onclick="createEnvironment()">+ New environment</button>
+      </div>
+      <div id="env-list" class="env-grid"></div>
+    </div>
+
+    <!-- ── Configure ─────────────────────────────────────────────────── -->
+    <div id="view-configure" class="view hidden">
+      <div class="config-header">
+        <h2>Configure</h2>
+        <div class="form-field" style="flex-direction:row;align-items:center;gap:10px;">
+          <label for="config-env-select" style="white-space:nowrap">Environment:</label>
+          <select id="config-env-select" style="max-width:200px"></select>
+        </div>
+      </div>
+      <div id="config-form-container"><p class="muted">Select an environment above.</p></div>
+    </div>
+
+    <!-- ── History ────────────────────────────────────────────────────── -->
+    <div id="view-history" class="view hidden">
+      <h2>Deployment History</h2>
+      <div id="history-list"></div>
+      <p id="history-empty" class="muted hidden">No deployments recorded yet.</p>
+    </div>
+
+  </main>
+
+  <script src="/static/app.js?v=__STATIC_VERSION__"></script>
+</body>
+</html>

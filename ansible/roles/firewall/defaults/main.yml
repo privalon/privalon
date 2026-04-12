@@ -1,0 +1,16 @@
+---
+# Firewall behavior
+
+# IMPORTANT:
+# ThreeFold may not provide a VM console. If you lock down public SSH and you are not on the tailnet,
+# you can strand yourself. To keep a safe recovery path, set firewall_allow_public_ssh_from_cidrs
+# to your workstation public IP (or office CIDR) temporarily during bootstrap.
+
+# Allow public SSH (port 22/tcp) only from these CIDRs/IPs. Default is empty (no public SSH).
+firewall_allow_public_ssh_from_cidrs: []
+
+# Fixed UDP listen port for inbound Tailscale traffic on hosts with public IPs.
+# This role cannot see defaults from the tailscale role, so it carries the same
+# fallback value locally. Prefer overriding tailscale_udp_port in group_vars if
+# you ever need to change it so both roles stay aligned.
+tailscale_udp_port: 41641

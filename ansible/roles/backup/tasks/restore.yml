@@ -1,0 +1,114 @@
+---
+# Backup role: restore from latest snapshot.
+#
+# Required vars:
+#   backup_service_name: name of the service to restore
+#
+# Behavior:
+#   - Checks if snapshot exists on primary backend
+#   - Checks if service data directory is empty
+#   - If both conditions: restores from latest snapshot
+#   - Skipped when backup_restore_enabled is false (--no-restore flag)
+
+- name: "Attempt restore from backup ({{ backup_service_name }})"
+  when:
+    - backup_restore_enabled | default(true)
+    - backup_enabled | default(false)
+    - (backup_restic_password | default('') | trim) != ''
+    - backup_backends | default([]) | length > 0
+    - (backup_backends[0].access_key | default('') | trim) != ''
+  block:
+    # Restic must be available before we can check for or restore snapshots.
+    # On fresh VMs it hasn't been installed yet (the backup deploy play runs later),
+    # so we install it here if missing, without blocking the rest of the deploy.
+    - name: "Ensure restic is installed for restore ({{ backup_service_name }})"
+      ansible.builtin.stat:
+        path: /usr/local/bin/restic
+      register: _restore_restic_bin
+
+    - name: "Install restic for restore if missing ({{ backup_service_name }})"
+      when: not _restore_restic_bin.stat.exists
+      block:
+        - name: "Ensure bzip2 available for restic install"
+          ansible.builtin.apt:
+            name: bzip2
+            state: present
+            update_cache: true
+            cache_valid_time: 3600
+          failed_when: false
+
+        - name: "Download restic for restore"
+          ansible.builtin.get_url:
+            url: "https://github.com/restic/restic/releases/download/v{{ backup_restic_version }}/restic_{{ backup_restic_version }}_linux_amd64.bz2"
+            dest: /tmp/restic-restore.bz2
+            mode: "0644"
+          failed_when: false
+          register: _restic_dl
+
+        - name: "Decompress and install restic for restore"
+          ansible.builtin.shell: |
+            set -euo pipefail
+            bzip2 -df /tmp/restic-restore.bz2
+            mv /tmp/restic-restore /usr/local/bin/restic
+            chmod 755 /usr/local/bin/restic
+          args:
+            executable: /bin/bash
+          when: _restic_dl is not failed
+          failed_when: false
+
+    - name: "Check for existing snapshot ({{ backup_service_name }})"
+      ansible.builtin.include_tasks: check_snapshot.yml
+
+    - name: "Find service data directories ({{ backup_service_name }})"
+      ansible.builtin.find:
+        paths: "{{ _restore_data_dir }}"
+        file_type: any
+        hidden: true
+      register: _data_dir_contents
+      when: backup_snapshot_exists | default(false)
+
+    - name: "Restore from latest snapshot ({{ backup_service_name }})"
+      ansible.builtin.shell: |
+        set -euo pipefail
+        # Source .env if present; on fresh VMs the backup deploy play hasn't run yet so
+        # the file doesn't exist — credentials are templated in explicitly below.
+        [[ -f {{ backup_base_dir }}/.env ]] && source {{ backup_base_dir }}/.env || true
+        export RESTIC_REPOSITORY="s3:{{ backup_backends[0].endpoint }}/{{ backup_backends[0].bucket }}/{{ backup_env }}/{{ backup_repo_name }}"
+        export RESTIC_PASSWORD="{{ backup_restic_password }}"
+        export AWS_ACCESS_KEY_ID="{{ backup_backends[0].access_key }}"
+        export AWS_SECRET_ACCESS_KEY="{{ backup_backends[0].secret_key }}"
+        export RESTIC_CACHE_DIR="{{ backup_cache_dir }}"
+        echo "Restoring {{ backup_service_name }} from latest backup snapshot..."
+        restic restore latest --target / --tag "{{ backup_service_name }}"
+        echo "Restore complete for {{ backup_service_name }}"
+      args:
+        executable: /bin/bash
+      when:
+        - backup_snapshot_exists | default(false)
+        - (_data_dir_contents.matched | default(0)) == 0
+      register: _restore_result
+      no_log: true
+      vars:
+        backup_repo_name: >-
+          {{
+            backup_service_name ~ ('-' ~ inventory_hostname if backup_service_name == 'tailscale' else '')
+          }}
+
+    - name: "Log restore result ({{ backup_service_name }})"
+      ansible.builtin.debug:
+        msg: >-
+          {%- if _restore_result is changed -%}
+          Restored {{ backup_service_name }} from backup snapshot
+          {%- elif not (backup_snapshot_exists | default(false)) -%}
+          No backup snapshot found for {{ backup_service_name }} — fresh install
+          {%- else -%}
+          Skipped restore for {{ backup_service_name }} — data directory not empty
+          {%- endif -%}
+
+  vars:
+    _restore_data_dir: "{{ _backup_service_data_dirs[backup_service_name] | default('/nonexistent') }}"
+    _backup_service_data_dirs:
+      headscale: /opt/headscale/data
+      gateway: /opt/caddy/data
+      monitoring: /opt/grafana/data
+      tailscale: /var/lib/tailscale

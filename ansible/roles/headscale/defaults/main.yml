@@ -1,0 +1,84 @@
+---
+# The headscale user created on first deploy. Defaults to admin_email so the single
+# user matches the operator email configured for the environment.
+headscale_user: "{{ admin_email | default('main@example.com') }}"
+
+# Public URL clients will use (must match TLS cert). Prefer a real DNS name.
+# Examples:
+#   https://headscale.example.com
+#   https://<control_public_ip>  (only if you accept self-signed or custom trust)
+headscale_url: ""
+
+# If headscale_url is empty, the role will fail (to avoid deploying a broken control plane).
+
+# Where headscale listens internally (Caddy will terminate TLS on :443 and proxy to this).
+headscale_listen_addr: 127.0.0.1:8080
+
+# Embedded DERP relay. Enabled by default because private-only nodes and
+# workstation/mobile clients frequently need a relay fallback even when direct
+# peer-to-peer WireGuard connectivity is unavailable.
+headscale_enable_derp: true
+headscale_derp_region_id: 900
+headscale_derp_region_code: blueprint
+headscale_derp_region_name: Blueprint Embedded DERP
+headscale_derp_stun_listen_addr: 0.0.0.0:3478
+headscale_derp_private_key_path: /var/lib/headscale/derp_server_private.key
+headscale_derp_public_ipv4: "{{ tf_public_ip | default('') }}"
+headscale_derp_public_ipv6: "{{ tf_public_ipv6 | default('') }}"
+
+# Headscale v0.28+ requires at least one DERP map entry. Keep the public
+# Tailscale DERP map in addition to the embedded DERP region so deployments
+# still have fallback relays if the control VM is temporarily unreachable.
+headscale_derp_urls:
+  - https://controlplane.tailscale.com/derpmap/default
+
+# Caddy TLS mode:
+# - internal (default): Caddy uses its own self-managed CA. No external DNS required.
+#   Certs are stable across container restarts (stored in /opt/caddy/data).
+#   The blueprint distributes the root CA cert to all VMs automatically.
+# - letsencrypt: Caddy uses ACME/Let's Encrypt. Requires:
+#   - headscale_url set to a real DNS name that resolves to this host
+#   - headscale_acme_email set
+#   - Port 80 or 443 reachable for ACME challenges
+#   Do NOT use letsencrypt with sslip.io/IP-based URLs in dev — LE rate limits apply.
+headscale_tls_mode: internal
+headscale_acme_email: ""
+
+# Preauth keys (created on each run if missing). Tags are used by ACL policy.
+headscale_preauthkey_reusable: true
+headscale_preauthkey_expiration: 8760h
+headscale_tag_keys:
+  servers: ["tag:servers"]
+  db: ["tag:db"]
+  backup: ["tag:backup"]
+
+# Headplane web UI (tailnet-only on control-vm port 3000)
+headplane_enabled: true
+headplane_image: ghcr.io/tale/headplane:latest
+# Bootstrap on localhost before Tailscale is up, then rebind to the control
+# node's tailnet IP later in the playbook.
+headplane_server_host: 127.0.0.1
+headplane_listen_addr: 127.0.0.1
+headplane_listen_port: 3000
+
+# Directory on the Ansible controller where authkeys and root CA cert are persisted.
+# deploy.sh overrides this to environments/<env>/inventory/ when --env is used.
+# Default points to ansible/inventory/ (adjacent to the playbook).
+headscale_local_inventory_dir: "{{ playbook_dir }}/../inventory"
+
+# MagicDNS base domain. When set, Headscale enables MagicDNS so tailnet nodes become
+# reachable by <hostname>.<headscale_magic_dns_base_domain> from within the tailnet.
+# Example: "in.example.com" → control VM becomes "control.in.example.com"
+# Leave empty to disable MagicDNS (raw Tailscale IPs only).
+headscale_magic_dns_base_domain: ""
+
+# Extra A records injected into MagicDNS (populated by the DNS reconcile play in site.yml
+# after all tailnet nodes have registered). Each entry: {name: "svc.in.X", value: "IP"}.
+# Do not set this manually — it is computed from monitoring Tailscale IP automatically.
+headscale_extra_dns_records: []
+
+# When false, the headscale node database (db.sqlite) is deleted after backup restore
+# so headscale starts clean on every destructive redeploy. Caddy TLS certs, noise key,
+# and ACL config are still restored. Set to false in environments where fresh node
+# registration on every full redeploy is preferred over preserving old registrations.
+headscale_restore_database: true

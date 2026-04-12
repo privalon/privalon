@@ -1,0 +1,77 @@
+# Headscale configuration (minimal)
+# See Headscale docs for full options.
+
+server_url: "{{ headscale_url }}"
+
+listen_addr: "{{ headscale_listen_addr }}"
+
+# Required for the Tailscale v2 protocol (newer headscale versions).
+noise:
+  private_key_path: /var/lib/headscale/noise_private.key
+
+# Prefixes used for allocating Tailscale IPs to nodes.
+prefixes:
+  v4: 100.64.0.0/10
+  v6: fd7a:115c:a1e0::/48
+
+# DERP configuration. Required by newer headscale versions.
+derp:
+  urls:
+{% for u in headscale_derp_urls | default([]) %}
+    - {{ u }}
+{% endfor %}
+  auto_update_enabled: true
+  update_frequency: 24h
+  server:
+    enabled: {{ 'true' if (headscale_enable_derp | default(true)) else 'false' }}
+    region_id: {{ headscale_derp_region_id | default(900) }}
+    region_code: "{{ headscale_derp_region_code | default('blueprint') }}"
+    region_name: "{{ headscale_derp_region_name | default('Blueprint Embedded DERP') }}"
+    stun_listen_addr: "{{ headscale_derp_stun_listen_addr | default('0.0.0.0:3478') }}"
+    private_key_path: "{{ headscale_derp_private_key_path | default('/var/lib/headscale/derp_server_private.key') }}"
+    automatically_add_embedded_derp_region: true
+    verify_clients: true
+{% if ((headscale_derp_public_ipv4 | default(tf_public_ip | default(''))) | trim) != '' %}
+    ipv4: "{{ headscale_derp_public_ipv4 | default(tf_public_ip | default('')) }}"
+{% endif %}
+{% if ((headscale_derp_public_ipv6 | default(tf_public_ipv6 | default(''))) | trim) != '' %}
+    ipv6: "{{ headscale_derp_public_ipv6 | default(tf_public_ipv6 | default('')) }}"
+{% endif %}
+
+# SQLite is fine for personal/SMB
+database:
+  type: sqlite3
+  sqlite:
+    path: /var/lib/headscale/db.sqlite
+
+# Policy/ACL file
+policy:
+  mode: file
+  path: /etc/headscale/acl.hujson
+
+# DNS settings. MagicDNS is enabled when headscale_magic_dns_base_domain is set,
+# making nodes reachable as <hostname>.<base_domain> within the tailnet.
+dns:
+{% if (headscale_magic_dns_base_domain | default('') | trim) != '' %}
+  magic_dns: true
+  base_domain: "{{ headscale_magic_dns_base_domain }}"
+{% else %}
+  magic_dns: false
+  base_domain: ""
+{% endif %}
+  nameservers:
+    global: []
+    split: {}
+  search_domains: []
+  override_local_dns: false
+{% if headscale_extra_dns_records | default([]) | length > 0 %}
+  extra_records:
+{% for record in headscale_extra_dns_records %}
+    - name: "{{ record.name }}"
+      type: "A"
+      value: "{{ record.value }}"
+{% endfor %}
+{% endif %}
+
+log:
+  level: info

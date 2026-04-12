@@ -1,0 +1,39 @@
+{
+  "version": 4,
+  "modno": 1,
+  "instance": "privalon-{{ blueprint_env | default('prod') }}",
+  "auth": {
+    "users": [
+      {
+        "name": "{{ services_admin_username }}",
+        "passwordBcrypt": "{{ _backrest_password_bcrypt_b64.stdout }}"
+      }
+    ],
+    "disabled": false
+  },
+  "repos": [
+{% set ns = namespace(first=true) %}
+{% for backend in backup_backends %}
+{% for svc in backrest_watched_services %}
+{% if not ns.first %},
+{% endif %}
+{% set ns.first = false %}
+    {
+      "id": "{{ backend.name }}-{{ svc }}",
+      "uri": "s3:{{ backend.endpoint }}/{{ backend.bucket }}/{{ blueprint_env | default('prod') }}/{{ svc }}",
+      "password": "{{ lookup('env', 'RESTIC_PASSWORD') }}",
+      "autoInitialize": true,
+      "env": [
+        "AWS_ACCESS_KEY_ID={{ backend.access_key }}",
+        "AWS_SECRET_ACCESS_KEY={{ backend.secret_key }}"
+      ],
+      "prunePolicy": {
+        "schedule": {
+          "disabled": true
+        }
+      }
+    }
+{% endfor %}
+{% endfor %}
+  ]
+}

@@ -1,0 +1,122 @@
+---
+- name: Ensure ufw is installed (Debian/Ubuntu)
+  ansible.builtin.apt:
+    name: ufw
+    state: present
+    update_cache: true
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Reset UFW to remove stale rules (authoritative baseline)
+  ansible.builtin.command:
+    argv: ["ufw", "--force", "reset"]
+  register: ufw_reset
+  changed_when: true
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Firewall | Allow SSH from TF private CIDR (bootstrap/jump-host)
+  ansible.builtin.ufw:
+    rule: allow
+    port: "22"
+    proto: tcp
+    from_ip: "{{ tf_private_cidr }}"
+  when:
+    - ansible_facts.os_family == 'Debian'
+    - (tf_private_cidr | default('') | trim) != ""
+
+- name: UFW default deny incoming
+  ansible.builtin.command:
+    argv: ["ufw", "default", "deny", "incoming"]
+  register: ufw_default_in
+  changed_when: "'Default incoming policy changed' in (ufw_default_in.stdout | default(''))"
+  when: ansible_facts.os_family == 'Debian'
+
+- name: UFW default allow outgoing
+  ansible.builtin.command:
+    argv: ["ufw", "default", "allow", "outgoing"]
+  register: ufw_default_out
+  changed_when: "'Default outgoing policy changed' in (ufw_default_out.stdout | default(''))"
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Allow all incoming on tailscale0
+  ansible.builtin.command:
+    argv: ["ufw", "allow", "in", "on", "tailscale0"]
+  register: ufw_allow_ts
+  changed_when: "'Skipping' not in (ufw_allow_ts.stdout | default(''))"
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Allow SSH on tailscale0 only
+  ansible.builtin.command:
+    argv: ["ufw", "allow", "in", "on", "tailscale0", "to", "any", "port", "22", "proto", "tcp"]
+  register: ufw_allow_ssh_ts
+  changed_when: "'Skipping' not in (ufw_allow_ssh_ts.stdout | default(''))"
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Allow Tailscale UDP on public interface
+  # This must stay aligned with tailscale_udp_port in the tailscale role.
+  # Without it, servers can appear online in the tailnet while laptops fail to
+  # initiate new sessions because inbound UDP to the public node is dropped.
+  ansible.builtin.command:
+    argv: ["ufw", "allow", "{{ tailscale_udp_port }}/udp"]
+  register: ufw_allow_tailscale_udp
+  changed_when: "'Skipping' not in (ufw_allow_tailscale_udp.stdout | default(''))"
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Firewall | Allow public SSH from allowlist (temporary recovery)
+  ansible.builtin.ufw:
+    rule: allow
+    port: "22"
+    proto: tcp
+    from_ip: "{{ item }}"
+  loop: "{{ firewall_allow_public_ssh_from_cidrs | default([]) }}"
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Allow public web ports on gateway
+  ansible.builtin.command:
+    argv: ["ufw", "allow", "{{ item }}/tcp"]
+  register: ufw_allow_gateway
+  changed_when: "'Skipping' not in (ufw_allow_gateway.stdout | default(''))"
+  loop:
+    - "80"
+    - "443"
+  when: ansible_facts.os_family == 'Debian' and inventory_hostname in (groups['gateway'] | default([]))
+
+- name: Allow routed exit-node traffic from tailscale0 to the public interface on gateway
+  ansible.builtin.command:
+    argv: ["ufw", "route", "allow", "in", "on", "tailscale0", "out", "on", "{{ ansible_default_ipv4.interface }}"]
+  register: ufw_allow_gateway_exit_forward
+  changed_when: "'Skipping' not in (ufw_allow_gateway_exit_forward.stdout | default(''))"
+  when: ansible_facts.os_family == 'Debian' and inventory_hostname in (groups['gateway'] | default([]))
+
+- name: Allow return routed traffic from public interface to tailscale0 on gateway
+  ansible.builtin.command:
+    argv: ["ufw", "route", "allow", "in", "on", "{{ ansible_default_ipv4.interface }}", "out", "on", "tailscale0"]
+  register: ufw_allow_gateway_exit_return
+  changed_when: "'Skipping' not in (ufw_allow_gateway_exit_return.stdout | default(''))"
+  when: ansible_facts.os_family == 'Debian' and inventory_hostname in (groups['gateway'] | default([]))
+
+
+- name: Allow Headscale HTTP+HTTPS on control
+  ansible.builtin.command:
+    argv: ["ufw", "allow", "{{ item }}/tcp"]
+  register: ufw_allow_control
+  changed_when: "'Skipping' not in (ufw_allow_control.stdout | default(''))"
+  loop:
+    - "443"
+  when: ansible_facts.os_family == 'Debian' and inventory_hostname in (groups['control'] | default([]))
+
+- name: Allow DERP STUN on control
+  ansible.builtin.command:
+    argv: ["ufw", "allow", "3478/udp"]
+  register: ufw_allow_derp_stun
+  changed_when: "'Skipping' not in (ufw_allow_derp_stun.stdout | default(''))"
+  when:
+    - ansible_facts.os_family == 'Debian'
+    - inventory_hostname in (groups['control'] | default([]))
+    - headscale_enable_derp | default(true)
+
+- name: Enable UFW
+  ansible.builtin.command:
+    argv: ["ufw", "--force", "enable"]
+  register: ufw_enable
+  changed_when: "'Firewall is active' in (ufw_enable.stdout | default(''))"
+  when: ansible_facts.os_family == 'Debian'

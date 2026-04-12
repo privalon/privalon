@@ -1,0 +1,498 @@
+---
+- name: Attempt restore from backup (headscale)
+  ansible.builtin.include_role:
+    name: backup
+    tasks_from: restore
+  vars:
+    backup_service_name: "headscale"
+  when: backup_restore_enabled | default(true)
+
+- name: Drop headscale node database after restore (fresh-start mode)
+  ansible.builtin.file:
+    path: /opt/headscale/data/db.sqlite
+    state: absent
+  when: not (headscale_restore_database | default(true))
+
+- name: Debug headscale_url
+  ansible.builtin.debug:
+    var: headscale_url
+
+- name: Fail if headscale_url is not set
+  ansible.builtin.fail:
+    msg: "headscale_url must be set (e.g. https://headscale.example.com) so clients can join the tailnet."
+  when: (headscale_url | default('') | trim) == ""
+
+- name: Fail fast when Let's Encrypt is configured with sslip.io or IP-based Headscale URL
+  ansible.builtin.fail:
+    msg: >-
+      headscale_tls_mode=letsencrypt is not supported with {{ headscale_url }}.
+      Use a real DNS hostname you control for ACME, or switch to headscale_tls_mode=internal.
+      This blueprint defaults to internal TLS specifically to avoid failed tailscale joins.
+  when:
+    - headscale_tls_mode == 'letsencrypt'
+    - (headscale_url | lower) is search('sslip\\.io') or (headscale_url | lower) is search('https?://([0-9]{1,3}\\.){3}[0-9]{1,3}(:[0-9]+)?/?$')
+
+- name: Install Docker (Debian/Ubuntu)
+  ansible.builtin.apt:
+    name:
+      - docker.io
+    state: present
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Configure Docker storage driver (ThreeFold VM overlay compat)
+  # ThreeFold Grid VMs use VirtioFS as the root filesystem, which does not
+  # support the overlay mount options (index=off) used by the overlay2/containerd
+  # snapshotter.  Use vfs by default; it works on any filesystem type.
+  # Override with docker_storage_driver in group_vars if the node supports overlay2.
+  ansible.builtin.copy:
+    dest: /etc/docker/daemon.json
+    mode: "0644"
+    content: |
+      {"storage-driver": "{{ docker_storage_driver | default('vfs') }}"}
+  register: _docker_daemon_json
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Ensure dockerd is running (zinit)
+  ansible.builtin.copy:
+    dest: /etc/zinit/dockerd.yaml
+    mode: "0644"
+    content: |
+      exec: dockerd -H unix:///var/run/docker.sock
+  register: _dockerd_zinit_cfg
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Restart dockerd when config changed
+  ansible.builtin.shell: |
+    # Stop and unregister if zinit already knows about dockerd
+    zinit stop dockerd 2>/dev/null || true
+    zinit forget dockerd 2>/dev/null || true
+    sleep 1
+    # Kill any stale process
+    kill -9 $(pgrep dockerd) 2>/dev/null || true
+    sleep 1
+    # Clear stale storage layers so vfs/overlay2 starts clean
+    rm -rf /var/lib/docker/image /var/lib/docker/vfs 2>/dev/null || true
+    # Re-register and start
+    zinit monitor dockerd 2>/dev/null || true
+    zinit start dockerd 2>/dev/null || true
+    exit 0
+  when:
+    - ansible_facts.os_family == 'Debian'
+    - _docker_daemon_json is changed or _dockerd_zinit_cfg is changed
+
+- name: Start dockerd (zinit)
+  ansible.builtin.command:
+    argv: ["zinit", "monitor", "dockerd"]
+  register: dockerd_zinit
+  changed_when: dockerd_zinit.rc == 0
+  failed_when: false
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Wait for Docker socket
+  ansible.builtin.wait_for:
+    path: /var/run/docker.sock
+    timeout: 60
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Create Headscale directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - /opt/headscale
+    - /opt/headscale/config
+    - /opt/headscale/data
+    - /opt/headplane
+    - /opt/headplane/config
+    - /opt/headplane/data
+    - /opt/caddy
+    - /opt/caddy/data
+    - /opt/caddy/config
+
+- name: Install Headscale ACL policy
+  ansible.builtin.template:
+    src: acl.hujson.j2
+    dest: /opt/headscale/config/acl.hujson
+    mode: "0644"
+
+- name: Render Headscale config
+  ansible.builtin.template:
+    src: headscale-config.yaml.j2
+    dest: /opt/headscale/config/config.yaml
+    mode: "0644"
+
+- name: Check whether Headplane cookie secret already exists
+  ansible.builtin.stat:
+    path: /opt/headplane/config/cookie_secret
+  register: headplane_cookie_secret_file
+  when: headplane_enabled
+
+- name: Generate persistent Headplane cookie secret (32 hex chars)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    umask 077
+    python3 - <<'PY' > /opt/headplane/config/cookie_secret
+    import secrets
+    print(secrets.token_hex(16))
+    PY
+  args:
+    executable: /bin/bash
+  when:
+    - headplane_enabled
+    - not headplane_cookie_secret_file.stat.exists
+
+- name: Read Headplane cookie secret
+  ansible.builtin.slurp:
+    src: /opt/headplane/config/cookie_secret
+  register: headplane_cookie_secret_raw
+  when: headplane_enabled
+
+- name: Store Headplane cookie secret fact
+  ansible.builtin.set_fact:
+    headplane_cookie_secret_effective: "{{ (headplane_cookie_secret_raw.content | b64decode | trim) }}"
+  when: headplane_enabled
+
+- name: Render Headplane config
+  ansible.builtin.template:
+    src: headplane-config.yaml.j2
+    dest: /opt/headplane/config/config.yaml
+    mode: "0600"
+  when: headplane_enabled
+
+- name: Render Caddyfile for Headscale
+  ansible.builtin.template:
+    src: Caddyfile.j2
+    dest: /opt/caddy/Caddyfile
+    mode: "0644"
+
+- name: Remove existing headscale container (if any)
+  ansible.builtin.command:
+    argv: ["docker", "rm", "-f", "headscale"]
+  register: headscale_rm
+  changed_when: headscale_rm.rc == 0
+  failed_when: false
+
+- name: Run Headscale container
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - -d
+      - --name
+      - headscale
+      - --restart
+      - unless-stopped
+      - --network
+      - host
+      - -v
+      - /opt/headscale/config:/etc/headscale
+      - -v
+      - /opt/headscale/data:/var/lib/headscale
+      - ghcr.io/juanfont/headscale:latest
+      - serve
+  register: headscale_run
+  changed_when: headscale_run.rc == 0
+
+- name: Wait for Headscale to become healthy
+  ansible.builtin.command:
+    argv: ["docker", "exec", "headscale", "headscale", "health"]
+  register: headscale_health
+  retries: 30
+  delay: 2
+  until: headscale_health.rc == 0
+  changed_when: false
+
+- name: Read Headscale noise private key
+  ansible.builtin.slurp:
+    src: /opt/headscale/data/noise_private.key
+  register: _headscale_noise_key_raw
+
+- name: Store Headscale noise key fingerprint as host fact
+  ansible.builtin.set_fact:
+    headscale_noise_private_key_sha256: "{{ (_headscale_noise_key_raw.content | b64decode) | hash('sha256') }}"
+
+- name: Persist Headscale noise key fingerprint on controller (best-effort)
+  ansible.builtin.copy:
+    dest: "{{ headscale_local_inventory_dir }}/headscale-noise-key.sha256"
+    mode: "0600"
+    content: "{{ headscale_noise_private_key_sha256 }}\n"
+  delegate_to: localhost
+  run_once: true
+  become: false
+
+- name: Check whether crontab is available for legacy cleanup
+  ansible.builtin.command:
+    argv: ["sh", "-c", "command -v crontab"]
+  register: _headscale_crontab_check
+  changed_when: false
+  failed_when: false
+
+- name: Remove Headscale invalid-node reconciliation cron job
+  ansible.builtin.cron:
+    name: headscale-reconcile-invalid-node-names
+    user: root
+    state: absent
+  when: _headscale_crontab_check.rc == 0
+
+- name: Remove Headscale invalid-node reconciliation helper
+  ansible.builtin.file:
+    path: /usr/local/bin/headscale-reconcile-invalid-node-names
+    state: absent
+
+- name: Remove existing headplane container (if any)
+  ansible.builtin.command:
+    argv: ["docker", "rm", "-f", "headplane"]
+  register: headplane_rm
+  changed_when: headplane_rm.rc == 0
+  failed_when: false
+
+- name: Run Headplane container
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - -d
+      - --name
+      - headplane
+      - --restart
+      - unless-stopped
+      - --network
+      - host
+      - -v
+      - /opt/headplane/config/config.yaml:/etc/headplane/config.yaml:ro
+      - -v
+      - /opt/headplane/data:/var/lib/headplane
+      - -v
+      - /opt/headscale/config/config.yaml:/etc/headscale/config.yaml:ro
+      - "{{ headplane_image }}"
+  register: headplane_run
+  changed_when: headplane_run.rc == 0
+  when: headplane_enabled
+
+- name: Ensure Headplane is listening locally
+  ansible.builtin.wait_for:
+    host: "{{ headplane_listen_addr }}"
+    port: "{{ headplane_listen_port }}"
+    timeout: 60
+  when: headplane_enabled
+
+- name: Remove Headplane container when disabled
+  ansible.builtin.command:
+    argv: ["docker", "rm", "-f", "headplane"]
+  register: headplane_rm_disabled
+  changed_when: headplane_rm_disabled.rc == 0
+  failed_when: false
+  when: not headplane_enabled
+
+- name: Remove legacy standalone derper container (if any)
+  ansible.builtin.command:
+    argv: ["docker", "rm", "-f", "derper"]
+  register: derper_rm
+  changed_when: derper_rm.rc == 0
+  failed_when: false
+
+- name: Remove existing caddy container (if any)
+  ansible.builtin.command:
+    argv: ["docker", "rm", "-f", "caddy"]
+  register: caddy_rm
+  changed_when: caddy_rm.rc == 0
+  failed_when: false
+
+- name: Run Caddy (TLS termination + reverse proxy)
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - -d
+      - --name
+      - caddy
+      - --restart
+      - unless-stopped
+      - --network
+      - host
+      - -v
+      - /opt/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - -v
+      - /opt/caddy/data:/data
+      - -v
+      - /opt/caddy/config:/config
+      - caddy:2
+  register: caddy_run
+  changed_when: caddy_run.rc == 0
+
+# When using tls internal, Caddy generates a private root CA.
+# We read and expose the root cert so the tailscale role can add it to the trust store on all VMs.
+- name: Wait for Caddy internal root CA cert to be generated
+  ansible.builtin.wait_for:
+    path: /opt/caddy/data/caddy/pki/authorities/local/root.crt
+    timeout: 60
+  when: headscale_tls_mode == 'internal'
+
+- name: Read Caddy internal root CA cert
+  ansible.builtin.slurp:
+    src: /opt/caddy/data/caddy/pki/authorities/local/root.crt
+  register: _caddy_root_ca_raw
+  when: headscale_tls_mode == 'internal'
+
+- name: Expose Caddy root CA cert as host fact (consumed by tailscale role)
+  ansible.builtin.set_fact:
+    caddy_root_ca_cert: "{{ _caddy_root_ca_raw.content | b64decode }}"
+  when: headscale_tls_mode == 'internal'
+
+- name: Persist Caddy root CA cert on controller (best-effort)
+  ansible.builtin.copy:
+    dest: "{{ headscale_local_inventory_dir }}/headscale-root-ca.crt"
+    mode: "0644"
+    content: "{{ _caddy_root_ca_raw.content | b64decode }}"
+  delegate_to: localhost
+  run_once: true
+  become: false
+  when: headscale_tls_mode == 'internal'
+
+- name: Ensure headscale user exists (best-effort)
+  ansible.builtin.command:
+    argv: ["docker", "exec", "headscale", "headscale", "users", "create", "{{ headscale_user }}"]
+  register: headscale_user_create
+  changed_when: headscale_user_create.rc == 0
+  failed_when: false
+
+- name: Lookup headscale user id (best-effort)
+  ansible.builtin.command:
+    argv: ["docker", "exec", "headscale", "headscale", "-o", "json", "users", "list"]
+  register: headscale_users_list
+  changed_when: false
+  failed_when: false
+
+- name: Store headscale_user_id fact (best-effort)
+  ansible.builtin.set_fact:
+    headscale_user_id: >-
+      {{
+        (
+          (headscale_users_list.stdout | default('[]') | from_json)
+          | selectattr('name', 'equalto', headscale_user)
+          | map(attribute='id')
+          | first
+        ) | default('')
+      }}
+  when:
+    - headscale_users_list.rc == 0
+    - (headscale_users_list.stdout | default('') | trim) != ''
+
+- name: Create preauth key for servers tag (best-effort)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    docker exec headscale headscale -o json preauthkeys create \
+      -u {{ headscale_user_id }} \
+      --reusable \
+      --expiration {{ headscale_preauthkey_expiration | quote }} \
+      --tags tag:servers \
+      | python3 -c 'import sys, json; print(json.load(sys.stdin)["key"])'
+  args:
+    executable: /bin/bash
+  register: _preauth_servers
+  changed_when: _preauth_servers.rc == 0
+  failed_when: false
+  no_log: true
+  when: (headscale_user_id | default('') | string | trim) != ''
+
+- name: Create preauth key for client devices (no tags, user-owned — for laptops/workstations)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    docker exec headscale headscale -o json preauthkeys create \
+      -u {{ headscale_user_id }} \
+      --reusable \
+      --expiration {{ headscale_preauthkey_expiration | quote }} \
+      | python3 -c 'import sys, json; print(json.load(sys.stdin)["key"])'
+  args:
+    executable: /bin/bash
+  register: _preauth_client
+  changed_when: _preauth_client.rc == 0
+  failed_when: false
+  no_log: true
+  when: (headscale_user_id | default('') | string | trim) != ''
+
+- name: Create preauth key for db tag (best-effort)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    docker exec headscale headscale -o json preauthkeys create \
+      -u {{ headscale_user_id }} \
+      --reusable \
+      --expiration {{ headscale_preauthkey_expiration | quote }} \
+      --tags tag:db \
+      | python3 -c 'import sys, json; print(json.load(sys.stdin)["key"])'
+  args:
+    executable: /bin/bash
+  register: _preauth_db
+  changed_when: _preauth_db.rc == 0
+  failed_when: false
+  no_log: true
+  when: (headscale_user_id | default('') | string | trim) != ''
+
+- name: Create preauth key for backup tag (best-effort)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    docker exec headscale headscale -o json preauthkeys create \
+      -u {{ headscale_user_id }} \
+      --reusable \
+      --expiration {{ headscale_preauthkey_expiration | quote }} \
+      --tags tag:backup \
+      | python3 -c 'import sys, json; print(json.load(sys.stdin)["key"])'
+  args:
+    executable: /bin/bash
+  register: _preauth_backup
+  changed_when: _preauth_backup.rc == 0
+  failed_when: false
+  no_log: true
+  when: (headscale_user_id | default('') | string | trim) != ''
+
+- name: Store preauth keys as host facts (best-effort)
+  ansible.builtin.set_fact:
+    headscale_authkeys:
+      servers: "{{ _preauth_servers.stdout | default('') | trim }}"
+      db: "{{ _preauth_db.stdout | default('') | trim }}"
+      backup: "{{ _preauth_backup.stdout | default('') | trim }}"
+      client: "{{ _preauth_client.stdout | default('') | trim }}"
+  no_log: true
+  when: (headscale_user_id | default('') | string | trim) != ''
+
+- name: Persist headscale authkeys on controller (best-effort)
+  ansible.builtin.copy:
+    dest: "{{ headscale_local_inventory_dir }}/headscale-authkeys.json"
+    mode: "0600"
+    content: |
+      {
+        "headscale_url": {{ headscale_url | to_json }},
+        "user": {{ headscale_user | to_json }},
+        "authkeys": {{ (headscale_authkeys | default({})) | to_json }}
+      }
+  delegate_to: localhost
+  run_once: true
+  become: false
+  no_log: true
+  when:
+    - (headscale_authkeys | default({})) | length > 0
+
+- name: Generate Headplane API key (refreshed on each deploy)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    docker exec headscale headscale apikeys create --expiration {{ headscale_preauthkey_expiration | quote }}
+  args:
+    executable: /bin/bash
+  register: _headplane_api_key
+  changed_when: _headplane_api_key.rc == 0
+  failed_when: false
+  no_log: true
+  when: headplane_enabled
+
+- name: Persist Headplane API key on controller (best-effort)
+  ansible.builtin.copy:
+    dest: "{{ headscale_local_inventory_dir }}/headplane-api-key.txt"
+    mode: "0600"
+    content: "{{ _headplane_api_key.stdout | trim }}\n"
+  delegate_to: localhost
+  run_once: true
+  become: false
+  when:
+    - headplane_enabled
+    - _headplane_api_key.rc == 0

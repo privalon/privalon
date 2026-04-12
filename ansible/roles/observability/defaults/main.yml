@@ -1,0 +1,7 @@
+---
+observability_alloy_image: grafana/alloy:latest
+observability_health_runner_name: blueprint-service-health
+observability_health_script_path: /usr/local/bin/blueprint-service-health
+observability_health_output_path: "{{ observability_textfile_dir }}/blueprint_service_health.prom"
+observability_health_check_timeout_seconds: 20
+observability_catalog_script_path: /usr/local/bin/blueprint-observability-catalog

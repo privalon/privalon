@@ -1,0 +1,276 @@
+---
+- name: Base OS configuration
+  hosts: all
+  gather_facts: true
+  any_errors_fatal: true
+  tags: [common]
+  pre_tasks:
+    - name: Derive headscale_url from base_domain when not explicitly set
+      ansible.builtin.set_fact:
+        headscale_url: "https://{{ headscale_subdomain | default('headscale') }}.{{ base_domain }}"
+      when:
+        - base_domain is defined
+        - base_domain | length > 0
+        - headscale_url is not defined or (headscale_url | trim) == '' or 'sslip.io' in headscale_url
+
+    - name: Auto-enable letsencrypt when base_domain provides a real DNS name
+      # Defaults to letsencrypt for real DNS names unless an environment opts
+      # out with headscale_tls_mode_auto: false.
+      ansible.builtin.set_fact:
+        headscale_tls_mode: letsencrypt
+      when:
+        - base_domain is defined
+        - base_domain | length > 0
+        - headscale_tls_mode_auto | default(true) | bool
+        - (headscale_tls_mode | default('internal') | trim) == 'internal'
+
+    - name: Pin Headscale FQDN in /etc/hosts for reliable Tailscale bootstrap
+      # Avoids dependency on external DNS propagation during provisioning.
+      # Always use the public IP (tf_public_ip) so that this entry remains valid
+      # even when Ansible is running over Tailscale (ansible_host would be the
+      # Tailscale IP, which does not exist yet when tailscaled is bootstrapping).
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: "{{ headscale_subdomain | default('headscale') }}\\.{{ base_domain }}"
+        line: "{{ hostvars['control-vm']['tf_public_ip'] | default(hostvars['control-vm']['ansible_host']) }} {{ headscale_subdomain | default('headscale') }}.{{ base_domain }}"
+        state: present
+      when:
+        - base_domain is defined
+        - base_domain | length > 0
+        - "'control-vm' in hostvars"
+        - (hostvars['control-vm']['tf_public_ip'] | default(hostvars['control-vm']['ansible_host']) | default('')) != ''
+  roles:
+    - common
+
+- name: Headscale control plane
+  hosts: control
+  gather_facts: true
+  tags: [headscale]
+  roles:
+    - headscale
+
+# Back up control-plane state (including /opt/caddy/data with the TLS cert) immediately
+# after Headscale and Caddy are running, before any downstream plays run.
+# This ensures that even if tailscale/monitoring/gateway plays fail, the LE cert is
+# already snapshotted so the next full redeploy can restore it and avoid hitting the
+# Let's Encrypt rate limit (5 certs per 7 days per exact hostname).
+- name: Backup control plane immediately after Headscale role
+  hosts: control
+  gather_facts: true
+  tags: [headscale, backup]
+  roles:
+    - backup
+
+- name: Join tailnet via Headscale
+  hosts: all
+  gather_facts: true
+  tags: [tailscale]
+  roles:
+    - tailscale
+
+- name: Rebind Headplane to control tailnet IP
+  hosts: control
+  gather_facts: false
+  tags: [headscale, tailscale]
+  vars:
+    headplane_rebind_image: "{{ headplane_image | default('ghcr.io/tale/headplane:latest') }}"
+    headplane_rebind_port: 3000
+  tasks:
+    - name: Determine local Tailscale IPv4 for Headplane
+      ansible.builtin.command:
+        argv: ["sh", "-c", "tailscale ip -4 | head -n1"]
+      register: _headplane_tailscale_ip
+      changed_when: false
+      when: headplane_enabled | default(true)
+
+    - name: Fail if Headplane tailnet bind IP is unavailable
+      ansible.builtin.assert:
+        that:
+          - (_headplane_tailscale_ip.stdout | default('') | trim) != ''
+        fail_msg: "Headplane tailnet bind requires a control-node Tailscale IPv4 address."
+      when: headplane_enabled | default(true)
+
+    - name: Re-render Headplane config for the control tailnet IP
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/headscale/templates/headplane-config.yaml.j2"
+        dest: /opt/headplane/config/config.yaml
+        mode: "0600"
+      vars:
+        headplane_server_host: "{{ _headplane_tailscale_ip.stdout | trim }}"
+        headplane_listen_port: "{{ headplane_rebind_port }}"
+      when: headplane_enabled | default(true)
+
+    - name: Remove existing headplane container before tailnet rebind
+      ansible.builtin.command:
+        argv: ["docker", "rm", "-f", "headplane"]
+      register: _headplane_rebind_rm
+      changed_when: _headplane_rebind_rm.rc == 0
+      failed_when: false
+      when: headplane_enabled | default(true)
+
+    - name: Run Headplane container on host network after tailnet rebind
+      ansible.builtin.command:
+        argv:
+          - docker
+          - run
+          - -d
+          - --name
+          - headplane
+          - --restart
+          - unless-stopped
+          - --network
+          - host
+          - -v
+          - /opt/headplane/config/config.yaml:/etc/headplane/config.yaml:ro
+          - -v
+          - /opt/headplane/data:/var/lib/headplane
+          - -v
+          - /opt/headscale/config/config.yaml:/etc/headscale/config.yaml:ro
+          - "{{ headplane_rebind_image }}"
+      register: _headplane_rebind_run
+      changed_when: _headplane_rebind_run.rc == 0
+      when: headplane_enabled | default(true)
+
+    - name: Ensure Headplane is listening on the control tailnet IP
+      ansible.builtin.wait_for:
+        host: "{{ _headplane_tailscale_ip.stdout | trim }}"
+        port: "{{ headplane_rebind_port }}"
+        timeout: 60
+      when: headplane_enabled | default(true)
+
+# After tailscale runs on all hosts, every node has a known Tailscale IP.
+# This play re-renders the headscale config with extra_records that point service
+# subdomains (grafana.in.X, prometheus.in.X, backrest.in.X) at the right proxy tier:
+# - monitoring VM directly in internal-PKI mode
+# - gateway VM Tailscale IP in Namecheap wildcard mode
+# Then it restarts headscale so the DNS changes are pushed to all tailnet clients.
+- name: Headscale service DNS reconcile
+  hosts: control
+  gather_facts: false
+  tags: [headscale, tailscale]
+  tasks:
+    - name: Build headscale DNS extra_records from internal service proxy IP
+      ansible.builtin.set_fact:
+        headscale_extra_dns_records: >-
+          {{
+            [
+              {'name': 'grafana.'     + headscale_magic_dns_base_domain, 'value': _internal_service_proxy_ip},
+              {'name': 'prometheus.'  + headscale_magic_dns_base_domain, 'value': _internal_service_proxy_ip},
+              {'name': 'backrest.'    + headscale_magic_dns_base_domain, 'value': _internal_service_proxy_ip}
+            ]
+            if (_internal_service_proxy_ip | trim != '' and (headscale_magic_dns_base_domain | default('') | trim) != '')
+            else []
+          }}
+      vars:
+        _tailscale_ip_map: >-
+          {{
+            (
+              lookup('file', tailscale_local_inventory_dir ~ '/tailscale-ips.json', errors='ignore')
+              | default('{}', true)
+              | from_json
+            )
+            if (tailscale_local_inventory_dir | default('') | trim) != ''
+            else {}
+          }}
+        _internal_service_proxy_ip: >-
+          {{
+            (hostvars['gateway-vm']['tailscale_ip'] | default(_tailscale_ip_map.get('gateway-vm', '')))
+            if (internal_service_tls_mode | default('internal')) == 'namecheap'
+            else (hostvars['monitoring-vm']['tailscale_ip'] | default(_tailscale_ip_map.get('monitoring-vm', '')))
+          }}
+      when: (headscale_magic_dns_base_domain | default('') | trim) != ''
+
+    - name: Re-render headscale config with service extra_records
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/headscale/templates/headscale-config.yaml.j2"
+        dest: /opt/headscale/config/config.yaml
+        mode: "0644"
+      register: _headscale_dns_config_changed
+      when:
+        - (headscale_magic_dns_base_domain | default('') | trim) != ''
+        - (headscale_extra_dns_records | default([]) | length) > 0
+
+    - name: Restart headscale to push DNS changes to tailnet
+      ansible.builtin.command:
+        argv: ["docker", "restart", "headscale"]
+      when:
+        - _headscale_dns_config_changed is defined
+        - _headscale_dns_config_changed is changed
+
+- name: Refresh tailnet sessions after Headscale updates
+  hosts: all
+  gather_facts: false
+  tags: [headscale, tailscale]
+  tasks:
+    - name: Restart tailscaled to refresh peer state after Headscale restarts
+      # IMPORTANT: Use nohup+& to fully detach the restart from the SSH session.
+      # When the SSH connection is via a Tailscale IP, stopping tailscaled kills the
+      # tunnel and the SSH session immediately.  Running the restart in the background
+      # lets the SSH session close cleanly while zinit stop/start completes on the VM.
+      ansible.builtin.shell: |
+        nohup bash -c '
+          sleep 1
+          timeout 20 zinit stop tailscaled 2>/dev/null || true
+          zinit monitor tailscaled 2>/dev/null || true
+          timeout 10 zinit start tailscaled 2>/dev/null || true
+        ' </dev/null >/dev/null 2>&1 &
+      args:
+        executable: /bin/bash
+      changed_when: false
+      failed_when: false
+
+    - name: Wait for SSH transport to come back after tailscaled refresh
+      # The background restart breaks existing SSH tunnels over the tailnet.
+      # Use Ansible's connection-aware probe here so workload nodes reached via
+      # ProxyCommand / jump hosts recover correctly as well.
+      ansible.builtin.wait_for_connection:
+        timeout: 60
+        sleep: 3
+        connect_timeout: 5
+
+    - name: Wait for tailscale socket after tailscaled refresh
+      ansible.builtin.wait_for:
+        path: /var/run/tailscale/tailscaled.sock
+        timeout: 30
+
+- name: Node exporter (bind to Tailscale)
+  hosts: all
+  gather_facts: true
+  tags: [node_exporter]
+  roles:
+    - node_exporter
+
+- name: Monitoring stack (Prometheus + Grafana)
+  hosts: monitoring
+  gather_facts: true
+  tags: [monitoring]
+  roles:
+    - monitoring
+
+- name: Backup (Restic encrypted backups)
+  hosts: all
+  gather_facts: true
+  tags: [backup]
+  roles:
+    - backup
+
+- name: Gateway reverse proxy + exit node
+  hosts: gateway
+  gather_facts: true
+  tags: [gateway]
+  roles:
+    - gateway
+
+- name: Service observability (Alloy + local health checks)
+  hosts: all
+  gather_facts: true
+  tags: [observability]
+  roles:
+    - observability
+
+- name: Firewall baseline (lock down public SSH)
+  hosts: all
+  gather_facts: true
+  tags: [firewall]
+  roles:
+    - firewall

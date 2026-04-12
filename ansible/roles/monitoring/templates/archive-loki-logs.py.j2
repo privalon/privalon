@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+import datetime as dt
+import gzip
+import io
+import json
+import pathlib
+import urllib.parse
+import urllib.request
+
+import boto3
+
+
+LOKI_URL = "http://{{ tailscale_ip }}:3100"
+PREFIX = "{{ logging_archive_prefix }}"
+BUCKET = "{{ logging_archive_backend.bucket if logging_archive_backend is defined else '' }}"
+ENDPOINT_URL = "{{ logging_archive_backend.endpoint if logging_archive_backend is defined else '' }}"
+AWS_ACCESS_KEY_ID = "{{ logging_archive_backend.access_key if logging_archive_backend is defined else '' }}"
+AWS_SECRET_ACCESS_KEY = "{{ logging_archive_backend.secret_key if logging_archive_backend is defined else '' }}"
+RETENTION_DAYS = {{ logging_archive_retention_days | int }}
+STATE_DIR = pathlib.Path("/opt/monitoring/archive")
+
+
+def loki_get_json(path, params):
+    query = urllib.parse.urlencode(params)
+    url = f"{LOKI_URL}{path}?{query}"
+    with urllib.request.urlopen(url, timeout=60) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def previous_utc_day_range():
+    today = dt.datetime.now(dt.timezone.utc).date()
+    day = today - dt.timedelta(days=1)
+    start = dt.datetime.combine(day, dt.time.min, tzinfo=dt.timezone.utc)
+    end = dt.datetime.combine(day + dt.timedelta(days=1), dt.time.min, tzinfo=dt.timezone.utc)
+    return day, start, end
+
+
+def query_services(start_ns, end_ns):
+    payload = loki_get_json(
+        "/loki/api/v1/label/service/values",
+        {"start": str(start_ns), "end": str(end_ns)},
+    )
+    return sorted(payload.get("data") or [])
+
+
+def iter_entries(service, start_ns, end_ns):
+    cursor = start_ns
+    while cursor < end_ns:
+        payload = loki_get_json(
+            "/loki/api/v1/query_range",
+            {
+                "query": '{env="{{ blueprint_env | default("prod") }}",service="%s"}' % service,
+                "start": str(cursor),
+                "end": str(end_ns),
+                "direction": "forward",
+                "limit": "5000",
+            },
+        )
+        streams = payload.get("data", {}).get("result", [])
+        max_seen = cursor
+        emitted = 0
+        for stream in streams:
+            labels = stream.get("stream") or {}
+            for ts, line in stream.get("values") or []:
+                ts_int = int(ts)
+                emitted += 1
+                max_seen = max(max_seen, ts_int)
+                yield {"timestamp": ts, "labels": labels, "line": line}
+        if emitted == 0:
+            break
+        cursor = max_seen + 1
+
+
+def upload_day_archive(s3_client, day, service, rows):
+    key = f"{PREFIX}/{day:%Y/%m/%d}/{service}.ndjson.gz"
+    buffer = io.BytesIO()
+    with gzip.GzipFile(fileobj=buffer, mode="wb") as handle:
+        for row in rows:
+            handle.write((json.dumps(row, separators=(",", ":")) + "\n").encode("utf-8"))
+    s3_client.put_object(Bucket=BUCKET, Key=key, Body=buffer.getvalue(), ContentType="application/gzip")
+    return key
+
+
+def cleanup_expired_archives(s3_client):
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=RETENTION_DAYS)
+    paginator = s3_client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=BUCKET, Prefix=f"{PREFIX}/"):
+        for obj in page.get("Contents") or []:
+            if obj["LastModified"] < cutoff:
+                s3_client.delete_object(Bucket=BUCKET, Key=obj["Key"])
+
+
+def main():
+    if not all([BUCKET, ENDPOINT_URL, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY]):
+        raise SystemExit(0)
+
+    day, start, end = previous_utc_day_range()
+    start_ns = int(start.timestamp() * 1_000_000_000)
+    end_ns = int(end.timestamp() * 1_000_000_000)
+    s3_client = boto3.client(
+        "s3",
+        endpoint_url=ENDPOINT_URL,
+        aws_access_key_id=AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+    )
+
+    uploaded = []
+    for service in query_services(start_ns, end_ns):
+        rows = list(iter_entries(service, start_ns, end_ns))
+        if not rows:
+            continue
+        uploaded.append(upload_day_archive(s3_client, day, service, rows))
+
+    cleanup_expired_archives(s3_client)
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    (STATE_DIR / "last-archive-run.json").write_text(
+        json.dumps({"day": day.isoformat(), "uploaded": uploaded}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,8 @@
+---
+backup:
+  service_name: "tailscale"
+  targets:
+    - name: "tailscale-state"
+      type: "directory"
+      path: "/var/lib/tailscale"
+      description: "Tailscale node identity and keys"

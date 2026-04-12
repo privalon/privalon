@@ -1,0 +1,54 @@
+auth_enabled: false
+
+server:
+  http_listen_address: {{ tailscale_ip }}
+  http_listen_port: 3100
+
+common:
+  path_prefix: /loki
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+query_range:
+  results_cache:
+    cache:
+      embedded_cache:
+        enabled: true
+        max_size_mb: 100
+
+frontend:
+  max_outstanding_per_tenant: {{ logging_loki_frontend_max_outstanding_per_tenant | int }}
+
+query_scheduler:
+  max_outstanding_requests_per_tenant: {{ logging_loki_scheduler_max_outstanding_requests_per_tenant | int }}
+
+querier:
+  max_concurrent: {{ logging_loki_querier_max_concurrent | int }}
+
+compactor:
+  working_directory: /loki/compactor
+  compaction_interval: 10m
+  retention_enabled: true
+
+limits_config:
+  split_queries_by_interval: {{ logging_loki_query_split_interval }}
+  retention_period: {{ logging_loki_retention_days | int * 24 }}h
+
+analytics:
+  reporting_enabled: false

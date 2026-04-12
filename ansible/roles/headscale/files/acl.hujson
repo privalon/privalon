@@ -1,0 +1,44 @@
+{
+  // Example Headscale ACL policy (HUJSON). Adjust to your needs.
+  // Default is deny.
+
+  "groups": {
+    "group:admins": []
+  },
+
+  "tagOwners": {
+    "tag:servers": ["user:main"],
+    "tag:db": ["user:main"],
+    "tag:backup": ["user:main"]
+  },
+
+  "acls": [
+    // Operator/dev access over tailnet to managed nodes (SSH + monitoring).
+    {
+      "action": "accept",
+      "src": ["autogroup:member"],
+      "dst": [
+        "tag:servers:22",
+        "tag:servers:3000",
+        "tag:servers:9090"
+      ]
+    },
+
+    {
+      "action": "accept",
+      "src": ["group:admins"],
+      "dst": [
+        "tag:servers:*",
+        "tag:db:*",
+        "tag:backup:*"
+      ]
+    },
+
+    // servers -> db (example port 5432)
+    {
+      "action": "accept",
+      "src": ["tag:servers"],
+      "dst": ["tag:db:5432"]
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+---
+backup:
+  service_name: "monitoring"
+  targets:
+    - name: "prometheus-data"
+      type: "directory"
+      path: "/opt/monitoring/prometheus"
+      description: "Prometheus time-series database and config"
+    - name: "grafana-data"
+      type: "directory"
+      path: "/opt/grafana/data"
+      description: "Grafana dashboards and settings"
+  retention:
+    keep_daily: 7
+    keep_weekly: 4
+    keep_monthly: 3

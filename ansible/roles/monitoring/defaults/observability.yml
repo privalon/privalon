@@ -1,0 +1,97 @@
+---
+observability:
+  services:
+    - service_name: grafana
+      role_label: monitoring
+      host_groups: [monitoring]
+      logs:
+        docker_containers: [grafana]
+        files: []
+        journald_units: []
+      health_checks:
+        local:
+          - name: container-running
+            type: docker
+            container: grafana
+        remote:
+          - name: http-ready
+            type: http
+            target: tailscale_self
+            port: 3000
+            path: /api/health
+            expected_status: 200
+    - service_name: prometheus
+      role_label: monitoring
+      host_groups: [monitoring]
+      logs:
+        docker_containers: [prometheus]
+        files: []
+        journald_units: []
+      health_checks:
+        local:
+          - name: container-running
+            type: docker
+            container: prometheus
+        remote:
+          - name: http-ready
+            type: http
+            target: tailscale_self
+            port: 9090
+            path: /-/healthy
+            expected_status: 200
+    - service_name: loki
+      role_label: monitoring
+      host_groups: [monitoring]
+      logs:
+        docker_containers: [loki]
+        files: []
+        journald_units: []
+      health_checks:
+        local:
+          - name: container-running
+            type: docker
+            container: loki
+        remote:
+          - name: http-ready
+            type: http
+            target: tailscale_self
+            port: 3100
+            path: /ready
+            expected_status: 200
+    - service_name: blackbox-exporter
+      role_label: monitoring
+      host_groups: [monitoring]
+      logs:
+        docker_containers: [blackbox-exporter]
+        files: []
+        journald_units: []
+      health_checks:
+        local:
+          - name: container-running
+            type: docker
+            container: blackbox-exporter
+        remote:
+          - name: metrics-ready
+            type: http
+            target: tailscale_self
+            port: 9115
+            path: /metrics
+            expected_status: 200
+    - service_name: backrest
+      role_label: monitoring
+      host_groups: [monitoring]
+      enabled_var: backup_enabled
+      logs:
+        docker_containers: [backrest]
+        files: []
+        journald_units: []
+      health_checks:
+        local:
+          - name: container-running
+            type: docker
+            container: backrest
+        remote:
+          - name: tcp-ready
+            type: tcp
+            target: tailscale_self
+            port: 9898
