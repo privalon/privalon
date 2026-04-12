@@ -307,7 +307,7 @@ backup:
 
 ### Future Service Manifest Examples
 
-Reference manifests for planned Tier-1 services:
+Reference manifest templates for future Tier-1 services (not yet implemented):
 
 <details>
 <summary>Vaultwarden (password vault)</summary>

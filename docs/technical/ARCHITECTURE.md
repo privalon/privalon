@@ -14,6 +14,7 @@ This architecture provides:
 * Private internal network using Headscale + Tailscale
 * Standard DERP relay fallback on the control VM for private-only nodes and hard NAT cases
 * No public IPs on workload VMs (default packaged workload: monitoring VM)
+* Centralized observability via Prometheus, Grafana, Loki, and Grafana Alloy on the monitoring VM
 * Centralized access control via ACLs
 * Optional full-tunnel VPN (Exit Node) for public Wi-Fi protection
 * Portable across ThreeFold and other clouds

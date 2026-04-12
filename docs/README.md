@@ -60,7 +60,7 @@ If you are new to the repo, read it in this order:
 - DNS routing and service visibility roadmap (remaining work): [roadmap/dns-and-visibility.md](roadmap/dns-and-visibility.md)
 - Published delivery milestones: [roadmap/DELIVERY-MILESTONES.md](roadmap/DELIVERY-MILESTONES.md)
 - Internal service template + Vaultwarden design spec: [roadmap/service-template-and-vaultwarden.md](roadmap/service-template-and-vaultwarden.md)
-- Logging and service observability: [technical/ARCHITECTURE.md](technical/ARCHITECTURE.md) + [technical/OPERATIONS.md](technical/OPERATIONS.md)
+- Logging and service observability: [technical/ARCHITECTURE.md#observability-architecture](technical/ARCHITECTURE.md#observability-architecture) + [technical/OPERATIONS.md#service-observability](technical/OPERATIONS.md#service-observability)
 - Blueprint improvement roadmap: [roadmap/blueprint-improvement.md](roadmap/blueprint-improvement.md)
 - AI-layer roadmap: [roadmap/ai-layer-roadmap.md](roadmap/ai-layer-roadmap.md)
 - Web UI — deployment dashboard & config interface: [technical/ARCHITECTURE.md#web-ui](technical/ARCHITECTURE.md#web-ui) + [technical/OPERATIONS.md#web-ui-local-deployment-dashboard](technical/OPERATIONS.md#web-ui-local-deployment-dashboard)

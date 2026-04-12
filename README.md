@@ -54,10 +54,10 @@ If you enable `public_service_tls_mode: namecheap` or `internal_service_tls_mode
 
 ## Security model (high level)
 
-- After bootstrap, **public SSH is intended to be blocked**; administration happens over the tailnet.
-- Workload services are intended to bind to the Tailscale interface only.
+- After bootstrap, **public SSH is blocked**; administration happens over the tailnet.
+- Workload services bind to the Tailscale interface only.
 - The control VM includes a standard DERP relay fallback so private-only nodes remain reachable when direct peer-to-peer paths fail.
-- Headplane is intended to stay **tailnet-only** even though Headscale itself remains public on the control VM.
+- Headplane stays **tailnet-only** while Headscale itself remains public on the control VM.
 - ThreeFold has “no console” realities; recovery may require **destroy + recreate** (see operations runbook).
 - When backup storage is configured, each successful deploy also refreshes a portable control-plane recovery bundle and prints a one-line restore token for fresh-machine recovery.
 - Deploy and restore now also auto-migrate the blueprint-managed environment data under `environments/<env>/` to the current supported schema. This covers environment files only, not service-internal databases or application data.
@@ -71,15 +71,17 @@ If you enable `public_service_tls_mode: namecheap` or `internal_service_tls_mode
 - Getting started: [docs/user/GETTING-STARTED.md](docs/user/GETTING-STARTED.md)
 - Deployment and configuration: [docs/user/DEPLOYMENT.md](docs/user/DEPLOYMENT.md)
 - Backup and recovery: [docs/user/BACKUP-RECOVERY.md](docs/user/BACKUP-RECOVERY.md)
+- Troubleshooting: [docs/user/TROUBLESHOOTING.md](docs/user/TROUBLESHOOTING.md)
 
 ### Technical (architecture + operations)
 - Architecture: [docs/technical/ARCHITECTURE.md](docs/technical/ARCHITECTURE.md)
 - Operations runbook: [docs/technical/OPERATIONS.md](docs/technical/OPERATIONS.md)
+- Backup architecture: [docs/technical/BACKUP.md](docs/technical/BACKUP.md)
 - Roadmap / design notes: [docs/roadmap/blueprint-improvement.md](docs/roadmap/blueprint-improvement.md)
 - Published delivery milestones: [docs/roadmap/DELIVERY-MILESTONES.md](docs/roadmap/DELIVERY-MILESTONES.md)
 - Internal service template + Vaultwarden design spec: [docs/roadmap/service-template-and-vaultwarden.md](docs/roadmap/service-template-and-vaultwarden.md)
-- Portable recovery bundle and restore: [docs/technical/ARCHITECTURE.md](docs/technical/ARCHITECTURE.md#control-plane-recovery-bundle) + [docs/technical/OPERATIONS.md](docs/technical/OPERATIONS.md#portable-recovery-bundle-and-restore)
-- Logging and service observability: [docs/technical/ARCHITECTURE.md](docs/technical/ARCHITECTURE.md#observability-architecture) + [docs/technical/OPERATIONS.md](docs/technical/OPERATIONS.md#service-observability)
+- Portable recovery bundle and restore: [docs/technical/ARCHITECTURE.md#control-plane-recovery-bundle](docs/technical/ARCHITECTURE.md#control-plane-recovery-bundle) + [docs/technical/OPERATIONS.md#portable-recovery-bundle-and-restore](docs/technical/OPERATIONS.md#portable-recovery-bundle-and-restore)
+- Logging and service observability: [docs/technical/ARCHITECTURE.md#observability-architecture](docs/technical/ARCHITECTURE.md#observability-architecture) + [docs/technical/OPERATIONS.md#service-observability](docs/technical/OPERATIONS.md#service-observability)
 
 ## AI-assisted contributions
 

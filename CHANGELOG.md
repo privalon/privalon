@@ -21,6 +21,10 @@ The format is based on Keep a Changelog, and this repository now follows Semanti
 - **`docs/technical/ARCHITECTURE.md`**: Updated the "Backup Requirements" section to replace stale bare paths (`/var/lib/headscale`, `/etc/headscale`, `/etc/caddy`) with a table of the actual deployed host paths matching the Ansible backup manifests, and added a reference to `BACKUP.md` for the full specification.
 - **`docs/technical/BACKUP.md`**: Removed the stale `March 2026 · v1.5` version header; corrected the Headscale "Existing Service Manifest" example to match the actual role (`/opt/headscale/data`, `/opt/headscale/config`, host `sqlite3` instead of `docker exec headscale sqlite3`).
 - **`docs/technical/OPERATIONS.md`**: Fixed typo `print_vaultden()` → `print_vaultwarden()` in the deployment-summary extension guidance.
+- **`README.md`**: Replaced three stale "intended to" phrases in the Security model section with present-tense descriptions matching shipped behavior; added missing `TROUBLESHOOTING.md` and `BACKUP.md` links to the docs map; corrected anchor-link display text so section links show the target anchor rather than the bare filename.
+- **`docs/README.md`**: Added explicit anchors to the "Logging and service observability" entry, which was the only docs-map entry without section-level anchors.
+- **`docs/technical/ARCHITECTURE.md`**: Added observability to the Overview bullet list; it is a core architectural component but was absent from the summary.
+- **`docs/technical/BACKUP.md`**: Clarified "planned Tier-1 services" heading to "future Tier-1 services (not yet implemented)" to remove ambiguity about implementation status.
 
 ## [1.13.39] — 2026-04-11
 
