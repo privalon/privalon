@@ -8,24 +8,32 @@ Current release: see [VERSION](VERSION) (history in [CHANGELOG.md](CHANGELOG.md)
 
 ## Why this exists
 
-This project is meant to make digital sovereignty practical by default for individuals and small organizations.
+Many people want digital sovereignty: fewer subscriptions, fewer opaque vendors touching their data, and far less dependence on platforms that move data through analytics, partner, and model-training pipelines they do not meaningfully control.
 
-The goal is not just "self-hosting," but self-hosting that stays safe, recoverable, and realistic to operate over time.
+The problem is that "just self-host it" is usually only the easy first step. Getting an open-source app to run is one thing. Keeping it backed up, restorable, observable, secure, properly exposed, and realistic to operate under failure is the hard part.
 
-- Security should be built in, not added later.
-- Backups should be automatic, not something operators remember when it is already too late.
-- Observability should be present from the start, not bolted on after incidents.
-- Recovery should be a standard workflow, not an improvisation.
-- Adding another service should reuse the same model instead of introducing chaos.
+That is the gap this project is trying to close.
 
-The blueprint therefore keeps only the minimum required public surface, pushes administration onto the tailnet, and treats predictability, recovery, and repeatability as first-class product goals.
+Privalon is meant to be a reusable framework for a private digital ecosystem, not just a one-off deploy recipe. The goal is to let one operator or a small team add services over time without re-solving the same operational problems every time.
+
+The baseline model is:
+
+- stable daily backups with failure visibility and restore paths designed to work under real pressure
+- observability from day one: metrics, logs, dashboards, and service health signals
+- the smallest practical public attack surface, with clear separation between public ingress and private services
+- built-in alerting, DNS, and TLS management as part of the platform instead of as manual follow-up work
+- private networking by default, with tailnet-first administration and optional gateway exit-node use
+- a repeatable service model so the next workload is easier to add than the previous one
+
+Longer-term roadmap work extends that operating model further, including higher-level operator assistance, but the current direction is already clear: make self-hosting feel materially closer to the convenience, reliability, and security bar people expect from proprietary cloud products.
 
 For the fuller product vision and operating model, start with [docs/user/GUIDE.md](docs/user/GUIDE.md).
 
 ## Who this is for
 
 - You want a small “personal / SMB” style blueprint with a **public gateway** and **private internal services**.
-- You’re comfortable operating infrastructure from a terminal and running Terraform/Ansible.
+- You want to grow from one private service to a small private ecosystem without re-solving backups, DNS, TLS, monitoring, and security boundaries each time.
+- You may still use the CLI, but you do not need to be comfortable doing everything from the terminal; the local web UI already covers the lower-friction path and is expected to keep improving over time.
 
 Non-goals:
 - This is not a managed service.
@@ -36,10 +44,10 @@ Non-goals:
 - Terraform installed.
 - A funded ThreeFold Grid account mnemonic.
 - SSH public keys ready (used for initial bootstrap access).
-- Optional but strongly recommended: a real DNS name for Headscale. The `sslip.io` fallback is useful for bootstrap/dev, but not as a long-term control-plane URL.
-- Optional: Namecheap API credentials if you want automatic A-record updates or browser-trusted wildcard TLS on the gateway for the public `*.yourdomain.com` namespace and/or the internal `*.in.<domain>` namespace.
+- Optional but strongly recommended: a real DNS domain for the control plane and any service hostnames you want to expose cleanly. The `sslip.io` fallback is useful for bootstrap/dev Headscale access, but it is not a good long-term control-plane URL and does not replace proper DNS for public services or browser-trusted TLS.
+- Optional: Namecheap API credentials only if you want the repo to manage DNS A-record updates automatically and/or if you choose Namecheap-backed wildcard TLS on the gateway for the public `*.yourdomain.com` namespace and/or the internal `*.in.<domain>` namespace. They are not required for manual DNS management or the default per-host Let's Encrypt flows.
 
-If you enable `public_service_tls_mode: namecheap` or `internal_service_tls_mode: namecheap`, the deploy can complete wildcard activation in a single pass when the current gateway public IP is already allowlisted in the Namecheap API settings before the deploy starts. If that IP was not allowlisted yet, finish the deploy, add the current gateway public IP to the Namecheap API allowlist, then run `./scripts/deploy.sh gateway --env <env>` once. Other TLS modes/providers remain one-pass flows.
+If you enable `public_service_tls_mode: namecheap` or `internal_service_tls_mode: namecheap`, those modes require `NAMECHEAP_API_USER` and `NAMECHEAP_API_KEY` in `secrets.env`. The deploy can complete wildcard activation in a single pass when the current gateway public IP is already allowlisted in the Namecheap API settings before the deploy starts. If that IP was not allowlisted yet, finish the deploy, add the current gateway public IP to the Namecheap API allowlist, then run `./scripts/deploy.sh gateway --env <env>` once. Other TLS modes/providers remain one-pass flows.
 
 ## Certificate Automation
 
@@ -59,7 +67,7 @@ If you enable `public_service_tls_mode: namecheap` or `internal_service_tls_mode
 - The control VM includes a standard DERP relay fallback so private-only nodes remain reachable when direct peer-to-peer paths fail.
 - Headplane stays **tailnet-only** while Headscale itself remains public on the control VM.
 - ThreeFold has “no console” realities; recovery may require **destroy + recreate** (see operations runbook).
-- When backup storage is configured, each successful deploy also refreshes a portable control-plane recovery bundle and prints a one-line restore token for fresh-machine recovery.
+- When backup storage is configured, each successful deploy refreshes a portable control-plane recovery bundle in backup storage. The recovery line is meant to be saved offline and reused to restore the latest bundle on a fresh machine; it is only reprinted when first created or when recovery-backend settings change.
 - Deploy and restore now also auto-migrate the blueprint-managed environment data under `environments/<env>/` to the current supported schema. This covers environment files only, not service-internal databases or application data.
 
 ## Documentation
@@ -79,6 +87,7 @@ If you enable `public_service_tls_mode: namecheap` or `internal_service_tls_mode
 - Backup architecture: [docs/technical/BACKUP.md](docs/technical/BACKUP.md)
 - Roadmap / design notes: [docs/roadmap/blueprint-improvement.md](docs/roadmap/blueprint-improvement.md)
 - Published delivery milestones: [docs/roadmap/DELIVERY-MILESTONES.md](docs/roadmap/DELIVERY-MILESTONES.md)
+- Forgejo first-service spec (service selection + visibility contract): [docs/roadmap/forgejo-first-service-spec.md](docs/roadmap/forgejo-first-service-spec.md)
 - Internal service template + Vaultwarden design spec: [docs/roadmap/service-template-and-vaultwarden.md](docs/roadmap/service-template-and-vaultwarden.md)
 - Portable recovery bundle and restore: [docs/technical/ARCHITECTURE.md#control-plane-recovery-bundle](docs/technical/ARCHITECTURE.md#control-plane-recovery-bundle) + [docs/technical/OPERATIONS.md#portable-recovery-bundle-and-restore](docs/technical/OPERATIONS.md#portable-recovery-bundle-and-restore)
 - Logging and service observability: [docs/technical/ARCHITECTURE.md#observability-architecture](docs/technical/ARCHITECTURE.md#observability-architecture) + [docs/technical/OPERATIONS.md#service-observability](docs/technical/OPERATIONS.md#service-observability)

@@ -1,0 +1,19 @@
+---
+backup:
+  service_name: "forgejo"
+  targets:
+    - name: "forgejo-data"
+      type: "directory"
+      path: "/opt/forgejo/data"
+      description: "Forgejo repositories, metadata, and attachments"
+  pre_backup:
+    - name: "sqlite-backup"
+      command: "sqlite3 /opt/forgejo/data/gitea/gitea.db '.backup /opt/forgejo/data/gitea/gitea.db.backup'"
+      description: "Create a consistent Forgejo SQLite backup"
+  post_backup:
+    - name: "cleanup-sqlite-backup"
+      command: "rm -f /opt/forgejo/data/gitea/gitea.db.backup"
+  restore_verify:
+    command: "docker exec forgejo forgejo --version"
+    description: "Verify Forgejo container is healthy after restore"
+    timeout: 60

@@ -11,6 +11,7 @@ Usage:
 Suites:
   bootstrap-smoke         Verifies Terraform outputs + SSH reachability (Tailscale-first)
   static-gateway          Verifies gateway config parsing and Caddy template rendering locally
+  static-observability    Verifies observability role guard behavior for partial/control-only runs
   dashboard-json          Verifies provisioned Grafana dashboard JSON structure and labels
   dns-helper-local       Verifies local Namecheap DNS helper logic with stubbed API responses
   tailnet-management      Verifies public headscale + tailnet-only headplane + local tailscale + tailscale SSH + monitoring and observability APIs
@@ -49,6 +50,9 @@ case "$suite" in
     ;;
   static-gateway)
     run 16_verify_gateway_static.sh
+    ;;
+  static-observability)
+    run 17_verify_observability_guard_static.sh
     ;;
   dashboard-json)
     run 05_verify_grafana_dashboards.sh

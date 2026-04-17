@@ -4,18 +4,22 @@ A lightweight local web interface for the Privalon deployment workflow.
 
 ## Why the UI exists
 
-The blueprint is trying to make digital sovereignty practical by default: private-by-default access, minimal public exposure, built-in recovery paths, and infrastructure that remains operable without turning every user into a full-time sysadmin.
+The blueprint is trying to make digital sovereignty practical by default: private-by-default access, minimal public exposure, built-in recovery paths, and infrastructure that stays operable without turning every user into a full-time sysadmin.
 
 The UI exists to support that goal from the operator side.
+
+If digital sovereignty requires endless manual terminal work for every routine task, it stops being practical for most people. The UI exists to reduce that operator friction without weakening the platform's security, recovery, or tailnet-first model.
+
+It already provides the lower-friction path for people who are not comfortable driving everything from the terminal, and that operator experience is expected to keep improving over time.
 
 It is not a separate product layer with a different philosophy. It is the local control surface for the same operating model:
 
 - safer defaults instead of ad hoc manual steps
 - lower day-to-day operational friction
 - visibility during deploys and recovery work
-- a simpler path for people who do not want to drive every workflow directly from the terminal
+- a simpler path for people who are not comfortable driving every workflow directly from the terminal
 
-In practice, that means the UI is meant to reduce routine operator effort without weakening the blueprint's underlying security or recovery model.
+In practice, that means the UI is meant to reduce routine operator effort while supporting the same larger goal as the rest of the project: a private service ecosystem that stays operable when backup, restore, DNS, TLS, monitoring, and day-2 work all matter at once.
 
 For the broader product framing, see [../docs/user/CONCEPT.md](../docs/user/CONCEPT.md) and [../docs/user/GUIDE.md](../docs/user/GUIDE.md).
 

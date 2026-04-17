@@ -671,6 +671,64 @@ except: pass
   fi
   print_value "Access" "Tailscale-connected devices only"
 
+  if [[ -f "$(inventory_dir)/service-catalog.json" ]]; then
+    local service_lines=""
+    service_lines="$(INVENTORY_DIR="$(inventory_dir)" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+inv = Path(os.environ.get("INVENTORY_DIR", ""))
+catalog_path = inv / "service-catalog.json"
+ts_path = inv / "tailscale-ips.json"
+
+try:
+    catalog = json.loads(catalog_path.read_text())
+except Exception:
+    catalog = {}
+try:
+    ts_ips = json.loads(ts_path.read_text())
+except Exception:
+    ts_ips = {}
+
+services = catalog.get("service_catalog") or {}
+for name, cfg in sorted(services.items()):
+    if not isinstance(cfg, dict):
+        continue
+    if not bool(cfg.get("enabled", True)):
+        continue
+    visibility = str(cfg.get("visibility", "internal")).strip() or "internal"
+    runtime = str(cfg.get("runtime", "ansible")).strip() or "ansible"
+    internal_alias = str(cfg.get("internal_alias", "")).strip()
+    external_subdomain = str(cfg.get("external_subdomain", "")).strip()
+    upstream_host = str(cfg.get("upstream_host", f"{name}-vm")).strip() or f"{name}-vm"
+    ts_ip = ts_ips.get(upstream_host, "")
+    print("|".join([name, runtime, visibility, internal_alias, external_subdomain, upstream_host, ts_ip]))
+PY
+)"
+
+    if [[ -n "${service_lines}" ]]; then
+      print_subsection "Configured Workload Services"
+      while IFS='|' read -r svc_name svc_runtime svc_visibility svc_internal_alias svc_external_sub svc_upstream_host svc_ts_ip; do
+        [[ -z "${svc_name}" ]] && continue
+        print_value "${svc_name} runtime" "${svc_runtime}"
+        print_value "${svc_name} visibility" "${svc_visibility}"
+        if [[ "${svc_visibility}" == "internal" || "${svc_visibility}" == "both" ]]; then
+          if [[ -n "${magic_dns_base}" && -n "${svc_internal_alias}" ]]; then
+            print_value "${svc_name} internal URL" "https://${svc_internal_alias}.${magic_dns_base}"
+          elif [[ -n "${svc_ts_ip}" ]]; then
+            print_value "${svc_name} internal URL" "http://${svc_ts_ip}"
+          fi
+        fi
+        if [[ "${svc_visibility}" == "external" || "${svc_visibility}" == "both" ]]; then
+          if [[ -n "${base_domain}" && -n "${svc_external_sub}" ]]; then
+            print_value "${svc_name} external URL" "https://${svc_external_sub}.${base_domain}"
+          fi
+        fi
+      done <<< "${service_lines}"
+    fi
+  fi
+
   if [[ "${public_tls_mode}" == "namecheap" && -n "${base_domain}" ]]; then
     local gateway_pub=""; gateway_pub="$(get_terraform_output gateway_public_ip)"
     print_subsection "HTTPS Public Wildcard TLS"
@@ -1030,6 +1088,9 @@ print_recovery_status() {
   local message=""; message="$(read_recovery_status_field message)"
   local primary_status=""; primary_status="$(read_recovery_status_field primary.status)"
   local secondary_status=""; secondary_status="$(read_recovery_status_field secondary.status)"
+  local recovery_line_state=""; recovery_line_state="$(read_recovery_status_field recovery_line.state)"
+  local recovery_line_fingerprint=""; recovery_line_fingerprint="$(read_recovery_status_field recovery_line.fingerprint)"
+  local recovery_line_printed=""; recovery_line_printed="$(read_recovery_status_field recovery_line.printed_in_summary)"
   local recovery_line=""; recovery_line="$(read_recovery_line)"
   local base_dir=""; base_dir="$(recovery_dir 2>/dev/null || true)"
 
@@ -1064,16 +1125,35 @@ print_recovery_status() {
 
   if [[ "${SUMMARY_SANITIZE:-0}" == "1" ]]; then
     if [[ -n "${base_dir}" ]]; then
-      print_value "Recovery line" "Stored locally at ${base_dir}/.recovery/latest-recovery-line"
+      local stored_message="Stored locally at ${base_dir}/.recovery/latest-recovery-line"
+      if [[ -n "${recovery_line_fingerprint}" ]]; then
+        stored_message+=" (fingerprint: ${recovery_line_fingerprint})"
+      fi
+      print_value "Recovery line" "${stored_message}"
     fi
-  elif [[ -n "${recovery_line}" ]]; then
+  elif [[ -n "${recovery_line}" && ( "${recovery_line_printed}" == "True" || "${recovery_line_printed}" == "true" ) ]]; then
     echo ""
     echo "Break-glass recovery line:"
     while IFS= read -r line; do
       echo "  ${line}"
     done < <(wrap_text "${recovery_line}" "$((SUMMARY_WIDTH - 2))")
-    print_instruction "Store this line offline. It can rebuild this environment from backup on a fresh macOS/Linux machine."
+    if [[ "${recovery_line_state}" == "rotated" ]]; then
+      print_instruction "Recovery line changed. Replace your previously stored offline copy before you need it."
+    else
+      print_instruction "Store this line offline now. Normal deploys refresh the bundle in backup storage without reprinting the line."
+    fi
     print_instruction "Portable restore: ./scripts/restore.sh --recovery-line '<paste the break-glass recovery line above>'"
+  elif [[ -n "${recovery_line}" ]]; then
+    local initialized_message="Already initialized"
+    if [[ -n "${recovery_line_fingerprint}" ]]; then
+      initialized_message+=" (fingerprint: ${recovery_line_fingerprint})"
+    fi
+    if [[ -n "${base_dir}" ]]; then
+      initialized_message+=". Stored locally at ${base_dir}/.recovery/latest-recovery-line"
+    fi
+    print_value "Recovery line" "${initialized_message}"
+    print_instruction "Use your saved offline recovery line for portable restore. It is not reprinted on normal deploys."
+    print_instruction "Portable restore: ./scripts/restore.sh --recovery-line '<your stored recovery line>'"
   fi
 
   if [[ "${recovery_status}" == "skipped" ]]; then

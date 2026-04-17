@@ -1272,6 +1272,9 @@ ansible_ping() {
   local limit="$1"
   pushd "${ANSIBLE_DIR}" >/dev/null
 
+  local ping_timeout
+  ping_timeout="${ANSIBLE_PING_TIMEOUT_SECONDS:-30}"
+
   local ansible_env=(
     TF_OUTPUTS_JSON="${ENV_INVENTORY_DIR}/terraform-outputs.json"
     TAILSCALE_IPS_JSON="${ENV_INVENTORY_DIR}/tailscale-ips.json"
@@ -1279,7 +1282,12 @@ ansible_ping() {
   [[ -n "${IGNORE_TAILSCALE_HOSTS}" ]] && ansible_env+=(IGNORE_TAILSCALE_HOSTS="${IGNORE_TAILSCALE_HOSTS}")
   prefer_tailscale_for_ansible && ansible_env+=(PREFER_TAILSCALE=1)
 
-  env "${ansible_env[@]}" ansible -i "inventory/tfgrid.py" "${limit}" -m ping >/dev/null 2>&1 || { popd >/dev/null; return 1; }
+  if command -v timeout >/dev/null 2>&1; then
+    timeout --foreground "${ping_timeout}"s \
+      env "${ansible_env[@]}" ansible -i "inventory/tfgrid.py" "${limit}" -m ping >/dev/null 2>&1 || { popd >/dev/null; return 1; }
+  else
+    env "${ansible_env[@]}" ansible -i "inventory/tfgrid.py" "${limit}" -m ping >/dev/null 2>&1 || { popd >/dev/null; return 1; }
+  fi
   popd >/dev/null
 }
 
@@ -1296,7 +1304,8 @@ attempt_backup() {
   if ansible_ping "${limit}"; then
     echo "[backup] Connection OK to ${limit}; running backup hook." >&2
   else
-    echo "[backup] Could not reach ${limit} via Ansible SSH; running backup hook anyway." >&2
+    echo "[backup] Could not reach ${limit} via Ansible SSH; skipping pre-destroy backup and proceeding." >&2
+    return 0
   fi
 
   export DEPLOY_SCOPE="${scope}"
@@ -1376,7 +1385,8 @@ wait_for_public_ssh() {
 
   [[ -n "${host_ip}" ]] || return 0
 
-  local timeout=180
+  local timeout
+  timeout="${SSH_WAIT_TIMEOUT_SECONDS:-180}"
   local elapsed=0
   local interval=5
 
@@ -1389,8 +1399,8 @@ wait_for_public_ssh() {
       return 0
     fi
     if [[ ${elapsed} -ge ${timeout} ]]; then
-      echo "[ssh-wait] WARNING: SSH not reachable on ${host_label} (${host_ip}) after ${timeout}s; proceeding anyway." >&2
-      return 0
+      echo "[ssh-wait] ERROR: SSH not reachable on ${host_label} (${host_ip}) after ${timeout}s; stopping deploy." >&2
+      return 1
     fi
     echo "[ssh-wait]   ${host_label}: [${elapsed}s elapsed] not ready yet…" >&2
     sleep ${interval}
@@ -1398,14 +1408,18 @@ wait_for_public_ssh() {
   done
 }
 
-# Wait until the gateway's public SSH port is reachable.
-# ThreeFold VMs take 60-120s to boot sshd after the deployment completes.
-# Without this wait, Ansible immediately gets "Connection refused" and fails.
+# Wait for required public SSH endpoints before starting Ansible when
+# Tailscale transport is not active yet.
+#
+# Always waits for gateway (jump host for private workloads).
+# For full/control scopes, also waits for control because Ansible targets it
+# directly over public SSH before the tailnet is established.
 wait_for_ssh() {
   local outputs_file="${ENV_INVENTORY_DIR}/terraform-outputs.json"
   [[ -f "${outputs_file}" ]] || return 0
 
   local gateway_ip
+  local control_ip
   gateway_ip="$(python3 -c "
 import json
 try:
@@ -1414,7 +1428,21 @@ try:
 except: pass
 " 2>/dev/null || true)"
 
+  control_ip="$(python3 -c "
+import json
+try:
+    d=json.load(open('${outputs_file}'))
+    print(d.get('control_public_ip',{}).get('value','') or d.get('control_public_ip',''))
+except: pass
+" 2>/dev/null || true)"
+
   wait_for_public_ssh "gateway" "${gateway_ip}"
+
+  case "${DEPLOY_SCOPE:-}" in
+    full|control)
+      wait_for_public_ssh "control" "${control_ip}"
+      ;;
+  esac
 }
 
 should_skip_public_ssh_wait() {
@@ -1942,9 +1970,6 @@ scope_control() {
     true
   else
     wait_for_ssh
-    if [[ ${replaced_core} -eq 1 ]]; then
-      wait_for_public_ssh "control" "$(control_public_ip_from_inventory)"
-    fi
   fi
   progress_step_done "wait-ssh"
 

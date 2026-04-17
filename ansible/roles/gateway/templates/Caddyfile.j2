@@ -1,6 +1,16 @@
 {% set public_ns = namespace(services=[]) %}
-{% if gateway_services | default([]) | length > 0 %}
-{% for service in gateway_services %}
+{% set _gateway_services = [] %}
+{% if gateway_services_effective is defined and (gateway_services_effective | length) > 0 %}
+{% set _gateway_services = gateway_services_effective %}
+{% elif gateway_services is defined and (gateway_services | length) > 0 %}
+{% set _gateway_services = gateway_services %}
+{% endif %}
+{% set _internal_routes = [] %}
+{% if internal_service_routes_effective is defined and (internal_service_routes_effective | length) > 0 %}
+{% set _internal_routes = internal_service_routes_effective %}
+{% endif %}
+{% if _gateway_services | length > 0 %}
+{% for service in _gateway_services %}
 {% set service_name = service.name | default('') | trim %}
 {% set service_domain = service_name %}
 {% if '.' not in service_name and (base_domain | default('') | trim) != '' %}
@@ -86,29 +96,24 @@
     propagation_timeout {{ internal_service_tls_namecheap_propagation_timeout | default('10m') }}
   }
 
-  {% if monitoring_upstream_ip | trim != '' %}
-  @grafana host grafana.{{ headscale_magic_dns_base_domain }}
-  handle @grafana {
-    reverse_proxy http://{{ monitoring_upstream_ip }}:3000
+  {% if _internal_routes | length > 0 %}
+  {% for service in _internal_routes %}
+  {% set _service_upstream_ip = (hostvars[service.upstream_host].tailscale_ip | default('')) %}
+  @internal_service_{{ loop.index }} host {{ service.name }}.{{ headscale_magic_dns_base_domain }}
+  handle @internal_service_{{ loop.index }} {
+    {% if _service_upstream_ip | trim != '' %}
+    reverse_proxy http://{{ _service_upstream_ip }}:{{ service.upstream_port }}
+    {% else %}
+    respond "upstream {{ service.upstream_host }} has no tailscale_ip yet" 502
+    {% endif %}
   }
-
-  @prometheus host prometheus.{{ headscale_magic_dns_base_domain }}
-  handle @prometheus {
-    reverse_proxy http://{{ monitoring_upstream_ip }}:9090
-  }
-
-  {% if backup_enabled | default(false) %}
-  @backrest host backrest.{{ headscale_magic_dns_base_domain }}
-  handle @backrest {
-    reverse_proxy http://{{ monitoring_upstream_ip }}:9898
-  }
-  {% endif %}
+  {% endfor %}
 
   handle {
     respond "unknown internal service under {{ headscale_magic_dns_base_domain }}" 404
   }
   {% else %}
-  respond "monitoring-vm has no tailscale_ip yet" 502
+  respond "no internal service routes configured" 404
   {% endif %}
 }
 {% endif %}

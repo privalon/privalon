@@ -1,9 +1,11 @@
-# Backup And Recovery
+# Backup and Recovery
 
 This document covers the two recovery layers in the blueprint:
 
 - the portable control-plane recovery bundle used to rebuild the local operator workspace
 - service-data backups handled through Restic and dual S3-compatible backends
+
+In the product model, this is not optional hardening. Backup and recovery are part of the default operating contract: restore confidence should exist before the first incident.
 
 ## Portable recovery bundle
 
@@ -13,13 +15,21 @@ The bundle contains the environment files and local state needed to rebuild the 
 
 The bundle also records the environment data-model version. During deploy and restore, the blueprint migrates older `environments/<env>/` layouts forward to the current supported schema.
 
+The recovery line is the stable break-glass secret for reaching that bundle. Normal deploys keep updating the bundle in S3; they do not keep rotating the line.
+
 ### What to store offline
 
 Store exactly one thing from the deployment summary:
 
 1. the opaque `bp1...` recovery line
 
-The latest generated line is also written locally to `environments/<env>/.recovery/latest-recovery-line`, but the intended workflow is to keep the printed recovery line in an offline password manager, secure note, or physical recovery card.
+The current line is also written locally to `environments/<env>/.recovery/latest-recovery-line`, but the intended workflow is to keep the printed recovery line in an offline password manager, secure note, or physical recovery card.
+
+Treat it like a seed phrase for the operator workspace:
+
+- save it when the deploy summary first prints it
+- keep using the same saved line for normal deploys and fresh-machine recovery
+- only replace it if the deploy summary explicitly tells you the recovery line changed
 
 ### Restore on a fresh machine
 
@@ -32,7 +42,7 @@ From a macOS or Linux machine with this repo checked out:
 The restore flow:
 
 1. decodes the recovery line
-2. tries the primary backup storage and then the secondary storage
+2. uses the embedded backup-storage credentials to try the primary backend and then the secondary backend
 3. downloads and decrypts the latest bundle
 4. recreates the environment files and local state
 5. applies pending environment data-model migrations
@@ -180,7 +190,7 @@ Skip automatic restore with:
 
 Keep these items securely outside the live workspace:
 
-1. the latest `bp1...` recovery line
+1. the current `bp1...` recovery line
 2. the Restic master password
 3. primary S3 endpoint, bucket, access key, and secret key
 4. secondary S3 endpoint, bucket, access key, and secret key

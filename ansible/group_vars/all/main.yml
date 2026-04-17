@@ -34,6 +34,11 @@ internal_service_tls_namecheap_resolvers:
 internal_service_tls_namecheap_propagation_delay: "2m"
 internal_service_tls_namecheap_propagation_timeout: "10m"
 
+# Generic per-service selection contract.
+# Keys are workload role names, values are service metadata consumed by
+# routing, DNS, summary, and role execution logic.
+service_catalog: {}
+
 # Shared admin credentials for internal services (Grafana, Prometheus, Backrest).
 # Set SERVICES_ADMIN_PASSWORD in secrets.env; change per-service after first login.
 services_admin_username: admin

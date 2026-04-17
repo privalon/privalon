@@ -24,6 +24,18 @@
 # headscale_magic_dns_base_domain: "in.yourdomain.com"  # private names over Tailscale
 # internal_service_tls_mode: "internal"       # or "namecheap" for wildcard LE on *.in.<base_domain>
 
+# Optional workload service catalog.
+# Each key should match a workload/role name.
+# service_catalog:
+#   forgejo:
+#     enabled: true
+#     runtime: docker
+#     visibility: internal          # internal | external | both
+#     internal_alias: git
+#     external_subdomain: git
+#     upstream_host: forgejo-vm
+#     upstream_port: 3000
+
 # Enable automated backups (requires S3 credentials in secrets.env)
 backup_enabled: false
 

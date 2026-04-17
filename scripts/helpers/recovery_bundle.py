@@ -429,6 +429,37 @@ def json_dumps(data: Dict[str, Any]) -> str:
     return json.dumps(data, indent=2, sort_keys=True) + "\n"
 
 
+def stable_json_dumps(data: Dict[str, Any]) -> str:
+    return json.dumps(data, separators=(",", ":"), sort_keys=True)
+
+
+def recovery_line_payload(environment: str, primary_backend: BackendConfig, secondary_backend: BackendConfig) -> Dict[str, Any]:
+    return {
+        "format_version": 2,
+        "environment": environment,
+        "primary": primary_backend.to_payload(),
+        "secondary": secondary_backend.to_payload(),
+    }
+
+
+def recovery_line_fingerprint(payload: Dict[str, Any]) -> str:
+    return sha256_bytes(stable_json_dumps(payload).encode("utf-8"))[:16]
+
+
+def load_existing_recovery_line(path: Path) -> Tuple[str, Optional[Dict[str, Any]]]:
+    if not path.exists():
+        return "", None
+
+    line = path.read_text(encoding="utf-8").splitlines()[0].strip() if path.read_text(encoding="utf-8") else ""
+    if not line:
+        return "", None
+
+    try:
+        return line, decode_recovery_line(line)
+    except RecoveryError:
+        return line, None
+
+
 def keystream(key_material: bytes, nonce: bytes, length: int) -> bytes:
     output = bytearray()
     counter = 0
@@ -594,6 +625,7 @@ def build_status_record(
     message: str,
     created_at: str,
     bundle: Dict[str, Any],
+    recovery_line: Dict[str, Any],
     primary: Dict[str, Any],
     secondary: Dict[str, Any],
 ) -> Dict[str, Any]:
@@ -603,6 +635,7 @@ def build_status_record(
         "message": message,
         "created_at_utc": created_at,
         "bundle": bundle,
+        "recovery_line": recovery_line,
         "primary": primary,
         "secondary": secondary,
     }
@@ -624,6 +657,12 @@ def refresh_bundle(args: argparse.Namespace) -> int:
             message="Portable recovery bundle is not configured. Enable backup_enabled and define two backup_backends.",
             created_at=iso_now(),
             bundle={},
+            recovery_line={
+                "state": "skipped",
+                "fingerprint": "",
+                "printed_in_summary": False,
+                "file": str(line_file),
+            },
             primary={"status": "skipped"},
             secondary={"status": "skipped"},
         )
@@ -636,6 +675,15 @@ def refresh_bundle(args: argparse.Namespace) -> int:
     bundle_password = secrets.token_urlsafe(32)
     primary_backend = backends[0]
     secondary_backend = backends[1]
+    desired_line_payload = recovery_line_payload(environment, primary_backend, secondary_backend)
+    line_fingerprint = recovery_line_fingerprint(desired_line_payload)
+    existing_recovery_line, existing_line_payload = load_existing_recovery_line(line_file)
+    if existing_recovery_line and existing_line_payload == desired_line_payload:
+        recovery_line = existing_recovery_line
+        recovery_line_state = "unchanged"
+    else:
+        recovery_line = encode_recovery_line(desired_line_payload)
+        recovery_line_state = "created" if not existing_recovery_line else "rotated"
 
     with tempfile.TemporaryDirectory(prefix=f"bundle-{environment}-") as tempdir_name:
         tempdir = Path(tempdir_name)
@@ -741,6 +789,7 @@ def refresh_bundle(args: argparse.Namespace) -> int:
             "bundle_key": "",
             "manifest_key": "",
             "bundle_sha256": bundle_sha,
+            "bundle_password": bundle_password,
         }
 
         for label in ("primary", "secondary"):
@@ -797,16 +846,9 @@ def refresh_bundle(args: argparse.Namespace) -> int:
         primary_ok = results["primary"].get("status") == "ok"
         secondary_ok = results["secondary"].get("status") == "ok"
 
-        line_payload = {
-            "format_version": 1,
-            "environment": environment,
-            "bundle_password": bundle_password,
-            "primary": primary_backend.to_payload(),
-            "secondary": secondary_backend.to_payload(),
-        }
-        recovery_line = encode_recovery_line(line_payload)
+        should_print_recovery_line = (primary_ok or secondary_ok) and recovery_line_state in {"created", "rotated"}
 
-        if primary_ok or secondary_ok:
+        if (primary_ok or secondary_ok) and recovery_line_state != "unchanged":
             write_private_text(line_file, recovery_line + "\n")
 
         if primary_ok and secondary_ok:
@@ -832,13 +874,19 @@ def refresh_bundle(args: argparse.Namespace) -> int:
             message=message,
             created_at=created_at,
             bundle={**bundle_descriptor, "bundle_sha256": bundle_sha},
+            recovery_line={
+                "state": recovery_line_state,
+                "fingerprint": line_fingerprint,
+                "printed_in_summary": should_print_recovery_line,
+                "file": str(line_file),
+            },
             primary=results["primary"],
             secondary=results["secondary"],
         )
         write_private_text(status_file, json_dumps(status_record))
 
         if args.print_json:
-            print(json_dumps({"status": status_record, "line": recovery_line if primary_ok or secondary_ok else ""}), end="")
+            print(json_dumps({"status": status_record, "line": recovery_line if should_print_recovery_line else ""}), end="")
         return rc
 
 
@@ -847,7 +895,7 @@ def prepare_restore(args: argparse.Namespace) -> int:
     work_dir.mkdir(parents=True, exist_ok=True)
     payload = decode_recovery_line(args.recovery_line)
     environment = payload["environment"]
-    password = payload["bundle_password"]
+    recovery_line_password = str(payload.get("bundle_password") or "")
 
     attempts: List[Dict[str, str]] = []
     chosen: Optional[Tuple[str, Dict[str, Any], Dict[str, Any], Path]] = None
@@ -868,6 +916,9 @@ def prepare_restore(args: argparse.Namespace) -> int:
             latest = json.loads(client.get_bytes(latest_key).decode("utf-8"))
             manifest = json.loads(client.get_bytes(latest["manifest_key"]).decode("utf-8"))
             bundle_bytes = client.get_bytes(latest["bundle_key"])
+            password = str(latest.get("bundle_password") or recovery_line_password)
+            if not password:
+                raise RecoveryError(f"Latest recovery pointer for {label} is missing bundle_password")
             bundle_sha = sha256_bytes(bundle_bytes)
             expected_sha = str(latest.get("bundle_sha256") or manifest.get("checksums", {}).get("bundle_sha256") or "")
             if expected_sha and bundle_sha != expected_sha:

@@ -1,6 +1,6 @@
 # Troubleshooting
 
-This document collects the most common user-facing failure cases and the fastest likely fix.
+This document collects the most common user-facing failure cases and the fastest likely fixes. It follows the same operating philosophy as the rest of the docs: failures are expected, and recovery should be low-improvisation.
 
 ## Common issues
 
@@ -11,6 +11,7 @@ This document collects the most common user-facing failure cases and the fastest
 | Terraform apply times out | Multi-node network creation is flaky on the selected placement | Pin nodes with `use_scheduler = false` |
 | Terraform reports a name conflict | Older infrastructure was not fully cleaned up | `deploy.sh` retries automatically, but inspect stale resources if it persists |
 | Verification scripts fail | Wrong IPs, URLs, or stale inventory | Run `./scripts/helpers/deployment-summary.sh` and confirm the generated values |
+| Deploy shows `monitoring-vm tailscale_ip is empty; cannot configure Alloy log shipping` | Control-only or partial Ansible scope ran before monitoring facts were available | Re-run full converge (`./scripts/deploy.sh full --env <env>`) or a scope that includes monitoring so Alloy log shipping can be configured |
 | Backups do not run | Backups are disabled or S3 credentials are missing | Check `group_vars/all.yml` and `secrets.env` |
 | `make ui` fails | Port `8090` is already in use | Start the UI on another port, for example `python3 -m uvicorn server:app --port 9000` from `ui/` |
 | Web UI shows `Error loading environments` | UI was started from the wrong directory or the server is not running | Run `make ui` from the repo root |

@@ -1,0 +1,216 @@
+---
+- name: Derive forgejo service config from service_catalog
+  ansible.builtin.set_fact:
+    forgejo_service_config: "{{ (service_catalog | default({})).get('forgejo', {}) }}"
+
+- name: Determine whether forgejo role should run
+  ansible.builtin.set_fact:
+    forgejo_enabled: "{{ (forgejo_service_config.enabled | default(true)) | bool }}"
+
+- name: Exit forgejo role when disabled
+  ansible.builtin.meta: end_host
+  when: not (forgejo_enabled | bool)
+
+- name: Validate forgejo runtime selection
+  ansible.builtin.assert:
+    that:
+      - (forgejo_service_config.runtime | default(forgejo_runtime)) == 'docker'
+    fail_msg: >-
+      Forgejo currently supports runtime=docker. Set service_catalog.forgejo.runtime to docker.
+
+- name: Attempt restore from backup (forgejo)
+  ansible.builtin.include_role:
+    name: backup
+    tasks_from: restore
+  vars:
+    backup_service_name: "forgejo"
+  when: backup_restore_enabled | default(true)
+
+- name: Determine local Tailscale IPv4 (fallback when tailscale role facts are unavailable)
+  ansible.builtin.command:
+    argv: ["tailscale", "ip", "-4"]
+  register: forgejo_tailscale_ip_cmd
+  changed_when: false
+  failed_when: false
+
+- name: Set tailscale_ip fact from local command when missing
+  ansible.builtin.set_fact:
+    tailscale_ip: "{{ (forgejo_tailscale_ip_cmd.stdout_lines | default([]) | first | default('')) | trim }}"
+  when: (tailscale_ip | default('') | trim) == ''
+
+- name: Fail if tailscale_ip is not available
+  ansible.builtin.fail:
+    msg: "tailscale_ip is empty; ensure the tailscale role ran successfully first."
+  when: (tailscale_ip | default('') | trim) == ''
+
+- name: Install Docker and sqlite3 (Debian/Ubuntu)
+  ansible.builtin.apt:
+    name:
+      - docker.io
+      - sqlite3
+    state: present
+    update_cache: true
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Configure Docker storage driver (ThreeFold VM overlay compat)
+  ansible.builtin.copy:
+    dest: /etc/docker/daemon.json
+    mode: "0644"
+    content: |
+      {"storage-driver": "{{ docker_storage_driver | default('vfs') }}"}
+  register: _forgejo_docker_daemon_json
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Ensure dockerd is running (zinit)
+  ansible.builtin.copy:
+    dest: /etc/zinit/dockerd.yaml
+    mode: "0644"
+    content: |
+      exec: dockerd -H unix:///var/run/docker.sock
+  register: _forgejo_dockerd_zinit_cfg
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Restart dockerd when config changed
+  ansible.builtin.shell: |
+    zinit stop dockerd 2>/dev/null || true
+    zinit forget dockerd 2>/dev/null || true
+    sleep 1
+    kill -9 $(pgrep dockerd) 2>/dev/null || true
+    sleep 1
+    rm -rf /var/lib/docker/image /var/lib/docker/vfs 2>/dev/null || true
+    zinit monitor dockerd 2>/dev/null || true
+    zinit start dockerd 2>/dev/null || true
+    exit 0
+  args:
+    executable: /bin/bash
+  when:
+    - ansible_facts.os_family == 'Debian'
+    - _forgejo_docker_daemon_json is changed or _forgejo_dockerd_zinit_cfg is changed
+
+- name: Start dockerd (zinit)
+  ansible.builtin.command:
+    argv: ["zinit", "monitor", "dockerd"]
+  register: forgejo_dockerd_zinit
+  changed_when: forgejo_dockerd_zinit.rc == 0
+  failed_when: false
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Wait for Docker socket
+  ansible.builtin.wait_for:
+    path: /var/run/docker.sock
+    timeout: 60
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Create Forgejo directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ forgejo_data_dir }}"
+    - "{{ forgejo_data_dir }}/gitea"
+    - "{{ forgejo_config_dir }}"
+
+- name: Determine Forgejo domain
+  ansible.builtin.set_fact:
+    forgejo_domain: >-
+      {{
+        (
+          (forgejo_service_config.external_subdomain | default('') | trim) ~ '.' ~ (base_domain | default('') | trim)
+        )
+        if ((forgejo_service_config.visibility | default('internal')) in ['external', 'both']
+            and (forgejo_service_config.external_subdomain | default('') | trim) != ''
+            and (base_domain | default('') | trim) != '')
+        else (
+          (forgejo_service_config.internal_alias | default('') | trim) ~ '.' ~ (headscale_magic_dns_base_domain | default('') | trim)
+          if ((forgejo_service_config.internal_alias | default('') | trim) != ''
+              and (headscale_magic_dns_base_domain | default('') | trim) != '')
+          else tailscale_ip
+        )
+      }}
+
+- name: Determine Forgejo root URL
+  ansible.builtin.set_fact:
+    forgejo_root_url: >-
+      {{
+        (
+          'https://' ~ forgejo_domain ~ '/'
+        )
+        if (
+          ((forgejo_service_config.visibility | default('internal')) in ['external', 'both'] and (base_domain | default('') | trim) != '')
+          or ((forgejo_service_config.visibility | default('internal')) in ['internal', 'both'] and (headscale_magic_dns_base_domain | default('') | trim) != '')
+        )
+        else ('http://' ~ tailscale_ip ~ ':' ~ (forgejo_http_port | string) ~ '/')
+      }}
+
+- name: Render Forgejo app.ini
+  ansible.builtin.template:
+    src: app.ini.j2
+    dest: "{{ forgejo_config_dir }}/app.ini"
+    owner: "1000"
+    group: "1000"
+    mode: "0600"
+
+- name: Remove existing Forgejo container (if any)
+  ansible.builtin.command:
+    argv: ["docker", "rm", "-f", "{{ forgejo_container_name }}"]
+  register: forgejo_rm
+  changed_when: forgejo_rm.rc == 0
+  failed_when: false
+
+- name: Run Forgejo (tailnet-only)
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - -d
+      - --name
+      - "{{ forgejo_container_name }}"
+      - --restart
+      - unless-stopped
+      - --network
+      - host
+      - -e
+      - USER_UID=1000
+      - -e
+      - USER_GID=1000
+      - -v
+      - "{{ forgejo_data_dir }}:/data"
+      - -v
+      - "{{ forgejo_config_dir }}/app.ini:/data/gitea/conf/app.ini"
+      - "{{ forgejo_image }}"
+  register: forgejo_run
+  changed_when: forgejo_run.rc == 0
+
+- name: Wait for Forgejo HTTP port
+  ansible.builtin.wait_for:
+    host: "{{ tailscale_ip }}"
+    port: "{{ forgejo_http_port }}"
+    timeout: 60
+
+- name: Bootstrap Forgejo admin user (optional)
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - "{{ forgejo_container_name }}"
+      - forgejo
+      - admin
+      - user
+      - create
+      - --username
+      - "{{ forgejo_admin_username }}"
+      - --password
+      - "{{ forgejo_admin_password }}"
+      - --email
+      - "{{ forgejo_admin_email }}"
+      - --admin
+      - --must-change-password=false
+  register: forgejo_admin_create
+  changed_when: forgejo_admin_create.rc == 0
+  failed_when: false
+  no_log: true
+  when:
+    - (forgejo_admin_username | default('') | trim) != ''
+    - (forgejo_admin_password | default('') | trim) != ''
+    - (forgejo_admin_email | default('') | trim) != ''

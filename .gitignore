@@ -45,3 +45,4 @@ environments/*/.ui-logs/
 #   cp -r environments/example environments/prod
 environments/*
 !environments/example/
+.venv-ui/

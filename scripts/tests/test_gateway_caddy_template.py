@@ -21,6 +21,10 @@ class GatewayCaddyTemplateTests(unittest.TestCase):
             "base_domain": "example.com",
             "headscale_magic_dns_base_domain": "",
             "internal_service_tls_mode": "internal",
+            "internal_service_routes_effective": [
+                {"name": "grafana", "upstream_host": "monitoring-vm", "upstream_port": 3000},
+                {"name": "prometheus", "upstream_host": "monitoring-vm", "upstream_port": 9090},
+            ],
             "internal_service_tls_namecheap_resolvers": ["1.1.1.1", "1.0.0.1"],
             "internal_service_tls_namecheap_propagation_delay": "2m",
             "internal_service_tls_namecheap_propagation_timeout": "10m",
@@ -32,6 +36,7 @@ class GatewayCaddyTemplateTests(unittest.TestCase):
                 "app-vm": {"tailscale_ip": "100.64.0.10"},
                 "matrix-vm": {"tailscale_ip": "100.64.0.11"},
                 "monitoring-vm": {"tailscale_ip": "100.64.0.20"},
+                "forgejo-vm": {"tailscale_ip": "100.64.0.30"},
             },
         }
         context.update(overrides)
@@ -56,6 +61,7 @@ class GatewayCaddyTemplateTests(unittest.TestCase):
                           base_domain: {json.dumps(context['base_domain'])}
                           headscale_magic_dns_base_domain: {json.dumps(context['headscale_magic_dns_base_domain'])}
                           internal_service_tls_mode: {json.dumps(context['internal_service_tls_mode'])}
+                          internal_service_routes_effective: {json.dumps(context['internal_service_routes_effective'])}
                           internal_service_tls_namecheap_resolvers: {json.dumps(context['internal_service_tls_namecheap_resolvers'])}
                           internal_service_tls_namecheap_propagation_delay: {json.dumps(context['internal_service_tls_namecheap_propagation_delay'])}
                           internal_service_tls_namecheap_propagation_timeout: {json.dumps(context['internal_service_tls_namecheap_propagation_timeout'])}
@@ -68,6 +74,8 @@ class GatewayCaddyTemplateTests(unittest.TestCase):
                           tailscale_ip: {json.dumps(context['hostvars']['matrix-vm']['tailscale_ip'])}
                         monitoring-vm:
                           tailscale_ip: {json.dumps(context['hostvars']['monitoring-vm']['tailscale_ip'])}
+                        forgejo-vm:
+                          tailscale_ip: {json.dumps(context['hostvars']['forgejo-vm']['tailscale_ip'])}
                     """
                 ).strip()
                 + "\n",
@@ -137,6 +145,22 @@ class GatewayCaddyTemplateTests(unittest.TestCase):
         self.assertIn("@public_service_1 host app.example.com", rendered)
         self.assertIn("@public_service_2 host matrix.example.com", rendered)
         self.assertIn("respond \"unknown public service under example.com\" 404", rendered)
+
+    def test_internal_namecheap_mode_renders_dynamic_internal_routes(self):
+        rendered = self._render(
+            internal_service_tls_mode="namecheap",
+            headscale_magic_dns_base_domain="in.example.com",
+            internal_service_routes_effective=[
+                {"name": "grafana", "upstream_host": "monitoring-vm", "upstream_port": 3000},
+                {"name": "git", "upstream_host": "forgejo-vm", "upstream_port": 3000},
+            ],
+        )
+
+        self.assertIn("*.in.example.com {", rendered)
+        self.assertIn("@internal_service_1 host grafana.in.example.com", rendered)
+        self.assertIn("@internal_service_2 host git.in.example.com", rendered)
+        self.assertIn("reverse_proxy http://100.64.0.20:3000", rendered)
+        self.assertIn("reverse_proxy http://100.64.0.30:3000", rendered)
 
 
 if __name__ == "__main__":

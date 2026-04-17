@@ -14,22 +14,15 @@
 # Each service resolves via MagicDNS extra_records (populated by headscale DNS reconcile).
 # Caddy binds only to the Tailscale interface so these are never exposed publicly.
 
-grafana.{{ headscale_magic_dns_base_domain }} {
+{% for service in internal_service_routes_effective | default([]) %}
+{% set _upstream_ip = (hostvars[service.upstream_host].tailscale_ip | default('')) %}
+{{ service.name }}.{{ headscale_magic_dns_base_domain }} {
   bind {{ tailscale_ip }}
   tls internal
-  reverse_proxy {{ tailscale_ip }}:3000
+  {% if _upstream_ip | trim != '' %}
+  reverse_proxy {{ _upstream_ip }}:{{ service.upstream_port }}
+  {% else %}
+  respond "upstream {{ service.upstream_host }} has no tailscale_ip yet" 502
+  {% endif %}
 }
-
-prometheus.{{ headscale_magic_dns_base_domain }} {
-  bind {{ tailscale_ip }}
-  tls internal
-  reverse_proxy {{ tailscale_ip }}:9090
-}
-
-{% if backup_enabled | default(false) %}
-backrest.{{ headscale_magic_dns_base_domain }} {
-  bind {{ tailscale_ip }}
-  tls internal
-  reverse_proxy {{ tailscale_ip }}:9898
-}
-{% endif %}
+{% endfor %}

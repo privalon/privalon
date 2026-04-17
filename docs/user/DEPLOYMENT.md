@@ -1,6 +1,8 @@
-# Deployment And Configuration
+# Deployment and Configuration
 
 This document covers environment configuration, deploy scopes and flags, node selection, TLS choices, and manual device-join behavior.
+
+Treat this as the operator contract for keeping deployments repeatable and safe to rerun. The goal is not maximum flexibility; the goal is predictable changes that preserve the same private-by-default, recoverable baseline described in [CONCEPT.md](CONCEPT.md).
 
 ## Deploy script reference
 
@@ -68,11 +70,37 @@ workloads = {
 
 When `use_scheduler = false`, every workload must also have its own `node_id`.
 
+## Service selection, runtime, and visibility
+
+Service VMs are still created through the Terraform `workloads` map, and service behavior is now selected in Ansible through `service_catalog` in `environments/<env>/group_vars/all.yml`.
+
+```yaml
+service_catalog:
+  forgejo:
+    enabled: true
+    runtime: docker               # docker | ansible | plain
+    visibility: internal          # internal | external | both
+    internal_alias: git
+    external_subdomain: git
+    upstream_host: forgejo-vm     # optional; defaults to <service>-vm
+    upstream_port: 3000
+```
+
+Behavior summary:
+
+- `enabled: false`: keep the VM (if present in Terraform) but skip role wiring.
+- `runtime`: validates the expected implementation profile for that service.
+- `visibility: internal`: publishes only `internal_alias.<headscale_magic_dns_base_domain>`.
+- `visibility: external`: publishes only `external_subdomain.<base_domain>` through gateway ingress.
+- `visibility: both`: publishes both internal and external paths.
+
+Security posture stays the same: service VMs remain private (no direct public ingress), and public exposure happens only through the gateway.
+
 ## Headscale URL and TLS
 
 By default, Headscale can use `https://<control_public_ip>.sslip.io` with a self-signed Caddy CA. That works for bootstrap, but it is not the preferred long-term control-plane identity.
 
-For production, use a stable DNS name and browser-trusted certificates:
+For production, use a stable DNS name and browser-trusted certificates. The same real domain is also what the public service hostnames and optional browser-trusted internal aliases build on:
 
 ```yaml
 headscale_url: "https://headscale.yourdomain.com"
@@ -82,11 +110,15 @@ headscale_acme_email: "you@yourdomain.com"
 
 DNS records must resolve before Ansible runs. You can configure them manually or let Namecheap automation update them after `terraform apply` when the required API credentials are present in `secrets.env`.
 
+Those Namecheap API credentials are optional unless you want automatic DNS A-record updates and/or you select the Namecheap-backed wildcard TLS modes on the gateway. The default per-host Let's Encrypt flows do not require them.
+
 See [Domain configuration](../technical/OPERATIONS.md#domain-configuration) for the operator runbook.
 
 ## Certificate behavior
 
 The blueprint has three separate certificate paths.
+
+The Namecheap-backed wildcard paths require `NAMECHEAP_API_USER` and `NAMECHEAP_API_KEY`. The default per-host Let's Encrypt paths do not.
 
 ### Public Headscale certificate
 

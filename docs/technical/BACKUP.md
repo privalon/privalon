@@ -28,6 +28,8 @@
 
 Every service deployed by this blueprint is backed up nightly (configurable) to two independent S3-compatible storage backends. Backups are encrypted before leaving the host using a single master password. New deployments auto-restore from the most recent backup if one exists.
 
+This design supports the core concept model: backups and restore readiness are part of normal operations, not emergency-only add-ons.
+
 **Key properties**:
 - Encrypted, deduplicated, incremental backups via Restic
 - Dual-target: two S3 backends on different providers

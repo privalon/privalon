@@ -1,6 +1,6 @@
 # Privalon — User Guide
 
-This is the main user-facing entry point for the blueprint. It now acts as a smaller hub that points to focused documents by topic instead of keeping all user guidance in one large file.
+This is the main user-facing entry point for the blueprint. Read it as documentation for operating a private digital ecosystem rather than launching one isolated app: the infrastructure layer, operational guardrails, service model, and lower-friction local web UI path that let you add private services over time without re-solving backup, restore, DNS, TLS, monitoring, and security boundaries from scratch.
 
 For technical implementation and operator workflows, see:
 - [Docs index](../README.md)
@@ -24,4 +24,4 @@ For technical implementation and operator workflows, see:
 
 ## Why the split
 
-The repo now separates product framing from setup steps and from recovery detail. That makes it easier for readers to understand what the blueprint is trying to achieve before they dive into configuration and operational specifics.
+The repo separates product framing from setup steps and from recovery detail so readers can understand the operating contract first: not merely "self-host this service," but "operate a growing set of private services with a coherent recovery, security, and observability model." After that, setup and runbook material is easier to evaluate in the right context.

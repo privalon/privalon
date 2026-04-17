@@ -2,6 +2,8 @@
 
 This document covers what the blueprint deploys, what you get from it, how to perform a first deployment, how to access the resulting services, and how to validate that the system is working.
 
+It assumes the concept model described in [CONCEPT.md](CONCEPT.md): operational safety is part of the product, not a follow-up task. The quick-start below is therefore focused on reaching a usable, private-by-default, recoverable baseline rather than only "getting services up."
+
 ## What the blueprint deploys
 
 This blueprint provisions VMs on the ThreeFold Grid with Terraform, then configures them with Ansible:
@@ -21,10 +23,12 @@ Additional workload VMs with no public IP can be added by extending the `workloa
 - **Standard relay fallback**: the control VM exposes an embedded DERP relay for paths where direct peer-to-peer connectivity fails.
 - **Automated security defaults**: public SSH is locked down after bootstrap and internal services bind to Tailscale-facing paths.
 - **Automated backups**: nightly encrypted backups to dual S3 backends with restore-aware redeploy flows.
-- **Portable control-plane recovery**: successful deploys can refresh an encrypted recovery bundle and print a one-line restore token.
+- **Portable control-plane recovery**: successful deploys keep an encrypted recovery bundle refreshed in backup storage, while one stable recovery line can restore the latest bundle on a fresh machine.
 - **Observability**: Prometheus, Grafana, Loki, health checks, and packaged dashboards are included from the start.
 - **Verification suites**: post-deploy checks are available under `scripts/tests/`.
 - **Local web UI**: `make ui` provides form-based configuration, live deploy logs, and a progress/ETA view.
+
+Together these defaults form the baseline operating model: private networking first, minimal public perimeter, restore confidence, and repeatable day-2 operations.
 
 ## Security model
 
@@ -56,7 +60,8 @@ The UI also shows a top-level progress bar and ETA based on the selected deploy 
 - Terraform installed, for example `sudo snap install terraform --classic` on Ubuntu
 - a funded TFChain wallet created at [dashboard.grid.tf](https://dashboard.grid.tf/)
 - one or more SSH public keys
-- ideally a real DNS name for Headscale rather than long-term use of the `sslip.io` bootstrap fallback
+- ideally a real DNS domain for Headscale and any public service hostnames rather than long-term use of the `sslip.io` bootstrap fallback
+- Namecheap API credentials only if you want automatic Namecheap DNS updates or the Namecheap-backed wildcard TLS modes; otherwise you can manage DNS manually and keep the default per-host Let's Encrypt flows
 
 #### 2. Configure your environment
 
@@ -101,7 +106,7 @@ This command:
 
 The control VM also exposes a DERP relay at `https://<headscale_url>/derp` for clients that cannot establish direct peer-to-peer paths.
 
-After completion, the deployment summary prints IPs, URLs, next steps, and the latest recovery line when the environment is configured for portable recovery.
+After completion, the deployment summary prints IPs, URLs, next steps, and portable-recovery status. The recovery line itself is shown when it is first created or when recovery-backend settings change; normal deploys keep refreshing the latest bundle without reprinting the same break-glass secret.
 
 When Namecheap DNS automation is enabled, deploys fail if public records do not converge to the expected IPs within the configured timeout. That behavior is intentional.
 

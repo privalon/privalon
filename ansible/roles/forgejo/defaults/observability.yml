@@ -1,0 +1,23 @@
+---
+observability:
+  services:
+    - service_name: forgejo
+      role_label: forgejo
+      host_groups: [forgejo]
+      enabled_var: forgejo_enabled
+      logs:
+        docker_containers: [forgejo]
+        files: []
+        journald_units: []
+      health_checks:
+        local:
+          - name: container-running
+            type: docker
+            container: forgejo
+        remote:
+          - name: http-ready
+            type: http
+            target: tailscale_self
+            port: 3000
+            path: /api/healthz
+            expected_status: 200

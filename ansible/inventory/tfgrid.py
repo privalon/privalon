@@ -141,6 +141,10 @@ def main() -> int:
         "all": {"vars": {"ansible_user": "root"}},
     }
 
+    for workload_name in workloads_private_ips:
+        if workload_name not in inventory:
+            inventory[workload_name] = {"hosts": []}
+
     # Make (re)deploys smoother: ThreeFold public IPs can be reused, which changes SSH host keys.
     # Explicitly disable known_hosts enforcement so ProxyJump doesn't fail with "REMOTE HOST IDENTIFICATION HAS CHANGED".
     inventory["all"]["vars"]["ansible_ssh_common_args"] = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
@@ -218,19 +222,29 @@ def main() -> int:
     # Workloads: keep ansible_host on private IPs and reach them via a jump host.
     # During bootstrap, the jump host is the gateway public IP. After bootstrap (and after public SSH is locked down),
     # prefer jumping via the gateway Tailscale IP when PREFER_TAILSCALE=1.
+    # Override: set JUMP_HOST to force a specific jump host (useful when gateway is unreachable).
     proxyjump = None
     jump_ip = None
 
-    if prefer_tailscale and isinstance(tailscale_ips, dict):
+    jump_host_override = os.environ.get("JUMP_HOST", "").strip()
+    if jump_host_override:
+        jump_ip = jump_host_override
+    elif prefer_tailscale and isinstance(tailscale_ips, dict):
         jump_ip = tailscale_ips.get("gateway-vm")
+
     if not jump_ip:
         jump_ip = gateway_public_ip
 
+    # Fallback: if gateway is not available, route workloads through control.
+    if not jump_ip and control_public_ip:
+        jump_ip = control_public_ip
+
     if jump_ip:
         # Use ProxyCommand instead of ProxyJump to ensure host key options apply to the jump host.
+        # Wrap %h in brackets so IPv6 mycelium addresses are passed correctly to -W.
         proxyjump = (
             "-o ProxyCommand=\"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
-            f"-W %h:%p root@{jump_ip}\" "
+            f"-W '[%h]:%p' root@{jump_ip}\" "
             "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
         )
 
@@ -253,9 +267,10 @@ def main() -> int:
         if proxyjump:
             hostvars["ansible_ssh_common_args"] = proxyjump
 
-        # Convenience grouping
-        if name == "monitoring":
-            inventory["monitoring"]["hosts"].append(host)
+        # Convenience grouping: add to the workload-specific group.
+        # The "monitoring" group is pre-created, so this covers both cases.
+        if name in inventory and host not in inventory[name]["hosts"]:
+            inventory[name]["hosts"].append(host)
 
         # Provide a suggested tag for Headscale ACLs
         if name in ("gateway", "control"):

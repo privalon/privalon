@@ -1,0 +1,39 @@
+APP_NAME = Forgejo
+RUN_MODE = prod
+RUN_USER = git
+WORK_PATH = /data/gitea
+
+[server]
+PROTOCOL = http
+DOMAIN = {{ forgejo_domain }}
+ROOT_URL = {{ forgejo_root_url }}
+HTTP_ADDR = {{ tailscale_ip }}
+HTTP_PORT = {{ forgejo_http_port }}
+SSH_DOMAIN = {{ forgejo_domain }}
+START_SSH_SERVER = true
+SSH_LISTEN_PORT = {{ forgejo_ssh_port }}
+SSH_PORT = {{ forgejo_ssh_port }}
+OFFLINE_MODE = false
+
+[database]
+DB_TYPE = sqlite3
+PATH = /data/gitea/gitea.db
+
+[repository]
+ROOT = /data/git/repositories
+
+[security]
+INSTALL_LOCK = true
+SECRET_KEY =
+REVERSE_PROXY_LIMIT = 1
+
+[service]
+DISABLE_REGISTRATION = {{ 'true' if (forgejo_disable_registration | default(true) | bool) else 'false' }}
+REQUIRE_SIGNIN_VIEW = false
+
+[actions]
+ENABLED = true
+
+[log]
+MODE = console
+LEVEL = Info

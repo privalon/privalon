@@ -28,6 +28,9 @@ internal_service_tls_namecheap_resolvers:
 internal_service_tls_namecheap_propagation_delay: "2m"
 internal_service_tls_namecheap_propagation_timeout: "10m"
 
+# Generic per-service selection contract.
+service_catalog: {}
+
 # Internal listen address for Headscale (Caddy proxies to this).
 # Must be set here (not just in the role defaults) so the DNS reconcile play
 # can re-render the headscale config outside of the role context.

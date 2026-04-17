@@ -6,6 +6,8 @@ For “how to deploy and use”, see:
 - Docs index: [../README.md](../README.md)
 - Main guide: [../user/GUIDE.md](../user/GUIDE.md)
 
+The architecture is intentionally optimized for the concept contract: minimal public exposure, tailnet-first operations, built-in observability, and recovery paths that are designed to work under stress.
+
 ## Overview
 
 This architecture provides:
@@ -618,11 +620,11 @@ Service-data backups and operator workspace recovery are intentionally separate 
 - Control-plane recovery uses a dedicated encrypted bundle stored under a separate `control-recovery/<env>/...` object path.
 - The bundle contains the environment files and local Terraform-related state needed to reconstruct the operator workspace on another machine.
 - The bundle metadata includes both the repo version and the environment `data_model_version`, so restore can migrate older environment layouts forward before the next deploy.
-- Each successful deploy refreshes a lightweight `latest.json` pointer so restore can fetch the newest bundle without scanning object history.
+- Each successful deploy refreshes a lightweight `latest.json` pointer so restore can fetch the newest bundle without scanning object history, while the recovery line stays stable unless the recovery-backend configuration itself changes.
 
 The data-model migration layer is intentionally limited to blueprint-managed environment files under `environments/<env>/`. It is not a generic migration system for service-internal databases or application storage formats.
 
-The printed recovery line is wrong-eye fool-protection, not a standalone cryptographic trust anchor. The line only helps the restore script locate and unlock the bundle; confidentiality still depends on the encrypted bundle stored in backup storage.
+The printed recovery line is wrong-eye fool-protection, not a standalone cryptographic trust anchor. The line gives restore access to the recovery-storage credentials, while the latest bundle-specific decrypt password lives in `latest.json` beside the encrypted bundle in backup storage.
 
 ---
 

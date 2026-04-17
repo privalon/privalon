@@ -1,0 +1,12 @@
+---
+forgejo_image: codeberg.org/forgejo/forgejo:10
+forgejo_container_name: forgejo
+forgejo_http_port: 3000
+forgejo_ssh_port: 2222
+forgejo_data_dir: /opt/forgejo/data
+forgejo_config_dir: /opt/forgejo/config
+forgejo_runtime: docker
+forgejo_disable_registration: true
+forgejo_admin_username: "{{ lookup('env', 'FORGEJO_ADMIN_USERNAME') | default('', true) }}"
+forgejo_admin_password: "{{ lookup('env', 'FORGEJO_ADMIN_PASSWORD') | default('', true) }}"
+forgejo_admin_email: "{{ lookup('env', 'FORGEJO_ADMIN_EMAIL') | default('', true) }}"

@@ -6,6 +6,91 @@ The format is based on Keep a Changelog, and this repository now follows Semanti
 
 ## [Unreleased]
 
+## [1.13.51] — 2026-04-17
+
+### Documentation
+- **`docs/user/DEPLOYMENT.md`** + **`docs/user/BACKUP-RECOVERY.md`**: Normalized heading style for clearer, consistent document titles.
+- **`docs/user/TROUBLESHOOTING.md`**: Tightened the opening description for readability while preserving the same recovery-first meaning.
+- **`docs/technical/OPERATIONS.md`**: Standardized product naming in service-extension guidance (`Vaultwarden`).
+- **`docs/roadmap/forgejo-first-service-spec.md`**: Clarified status as a historical design spec and added an explicit note to use user/technical docs as the source of truth for current shipped behavior.
+
+## [1.13.50] — 2026-04-17
+
+### Fixed
+- **`scripts/deploy.sh`**: Public SSH preflight now fails fast after a bounded timeout (`SSH_WAIT_TIMEOUT_SECONDS`, default `180`) instead of warning and continuing into Ansible with unreachable hosts.
+- **`scripts/deploy.sh`**: Destructive pre-destroy backup now skips immediately when hosts are unreachable, so destroy/recreate proceeds without spending extra time on impossible backup attempts.
+- **`scripts/deploy.sh`**: Added a bounded Ansible reachability probe timeout (`ANSIBLE_PING_TIMEOUT_SECONDS`, default `30`) so pre-destroy connectivity checks cannot stall.
+
+### Documentation
+- **`docs/README.md`** + **`docs/user/GUIDE.md`** + **`docs/user/GETTING-STARTED.md`** + **`docs/user/DEPLOYMENT.md`** + **`docs/user/BACKUP-RECOVERY.md`** + **`docs/user/TROUBLESHOOTING.md`** + **`docs/technical/ARCHITECTURE.md`** + **`docs/technical/OPERATIONS.md`** + **`docs/technical/BACKUP.md`** + **`ui/README.md`**: Cleaned and aligned framing language around the concept model: private-by-default operations, minimal public exposure, built-in observability, restore confidence, and repeatable low-improvisation day-2 workflows.
+
+## [1.13.49] — 2026-04-17
+
+### Fixed
+- **`scripts/deploy.sh`**: Full and control deploy scopes now wait for control VM public SSH readiness (in addition to gateway) before starting Ansible when Tailscale transport is not active yet. This prevents early `UNREACHABLE` failures like `control-vm ... port 22: Connection refused` right after Terraform apply.
+
+## [1.13.48] — 2026-04-17
+
+### Fixed
+- **`ansible/roles/observability/tasks/main.yml`**: Reworked Loki log-shipping derivation to tolerate control-only/partial Ansible runs. Missing `monitoring-vm` Tailscale IP now emits a warning and skips Alloy log-shipping tasks for that run instead of hard-failing the entire deployment during bootstrap.
+
+### Added
+- **`scripts/tests/17_verify_observability_guard_static.sh`** + **`scripts/tests/run.sh`**: Added a static regression check (`static-observability` suite) to ensure the observability role keeps the log-shipping guard and does not reintroduce a hard failure on missing `monitoring-vm` Tailscale IP.
+
+### Documentation
+- **`docs/user/TROUBLESHOOTING.md`** + **`docs/technical/OPERATIONS.md`**: Documented expected behavior and recovery guidance for temporary log-shipping skips during control-only or partial deploy passes.
+
+## [1.13.47] — 2026-04-16
+
+### Changed
+- **`ansible/roles/backup/tasks/deploy.yml`**: Fixed backup manifest-to-host matching so workload service groups such as `forgejo` are treated as backup-bearing host services. This allows Forgejo backup configs, wrapper scripts, cron jobs, and initial snapshots to deploy on workload VMs instead of being silently skipped.
+
+## [1.13.46] — 2026-04-15
+
+### Added
+- **Forgejo first-service implementation**: Added a new `forgejo` workload role with tailnet-only defaults, containerized runtime, optional admin bootstrap from environment secrets, and explicit bind behavior that keeps the service VM private.
+- **Service runtime/visibility contract**: Added `service_catalog` as a shared config map for per-service `enabled`, `runtime` (`docker|ansible|plain`), and `visibility` (`internal|external|both`) selection.
+- **Service integration manifests**: Added Forgejo `defaults/service_integration.yml`, `defaults/backup.yml`, and `defaults/observability.yml` so the service is wired into backup and observability pipelines from day one.
+
+### Changed
+- **`ansible/playbooks/site.yml`**: Added service-catalog schema validation, optional workload-role execution based on service catalog entries, dynamic internal DNS alias generation, and persisted compiled service catalog metadata under `environments/<env>/inventory/service-catalog.json`.
+- **`ansible/inventory/tfgrid.py`**: Dynamic inventory now creates one host group per workload key, enabling generic host-group targeting for future service roles.
+- **`ansible/roles/gateway`** + **`ansible/roles/monitoring`**: Internal and external routing now derive effective service routes from `service_catalog` in addition to existing static/legacy inputs, while preserving existing TLS-mode behavior.
+- **`scripts/helpers/deployment-summary.sh`**: Deployment summary now surfaces configured workload services (runtime, visibility, and derived internal/external URLs) from the compiled service catalog artifact.
+
+### Documentation
+- **`docs/user/DEPLOYMENT.md`** + **`environments/example/group_vars/all.yml`** + **`environments/example/terraform.tfvars.example`**: Added operator-facing examples for service selection, runtime choice, visibility mode, and optional Forgejo workload definition.
+
+### Testing
+- **`scripts/tests/test_gateway_caddy_template.py`**: Added and updated coverage for dynamic internal route rendering and preserved public-routing behavior under the new derived route model.
+
+## [1.13.45] — 2026-04-13
+
+### Documentation
+- **`docs/README.md`**: Removed the stale duplicated legacy quick-start/reference block that had drifted past the docs index section, fixed the "Digital Sovereignty" heading typo, and expanded the "What you get" overview so the docs landing page matches the currently shipped platform capabilities more accurately.
+
+## [1.13.44] — 2026-04-13
+
+### Changed
+- **`scripts/helpers/recovery_bundle.py`** + **`scripts/helpers/deployment-summary.sh`** + **`scripts/restore.sh`**: Changed the portable recovery model from a rotating per-deploy recovery line to a stable recovery line that reuses the same offline secret across normal deploys while still refreshing the encrypted control-plane bundle on every successful deploy. The bundle-specific decrypt password now lives in the per-backend `latest.json` recovery pointer in backup storage, and the deployment summary only reprints the recovery line when it is first created or when recovery-backend settings change.
+
+### Documentation
+- **`README.md`** + **`docs/README.md`** + **`docs/user/GETTING-STARTED.md`** + **`docs/user/BACKUP-RECOVERY.md`** + **`docs/technical/ARCHITECTURE.md`** + **`docs/technical/OPERATIONS.md`**: Updated the portable recovery docs to describe the seed-like workflow accurately: store the recovery line offline once, keep refreshing bundles in backup storage after each deploy, and replace the line only when the recovery configuration changes.
+
+### Testing
+- **`scripts/tests/90_verify_portable_recovery_bundle.sh`** + **`ui/tests/test_deploy_cli.py`**: Added regression coverage for stable recovery-line reuse across normal refreshes, bundle passwords stored in `latest.json`, and deployment summary output that suppresses reprinting an unchanged recovery line.
+
+## [1.13.43] — 2026-04-12
+
+### Documentation
+- **`README.md`** + **`docs/README.md`** + **`docs/user/CONCEPT.md`** + **`docs/user/GUIDE.md`** + **`ui/README.md`**: Clarified that the local web UI is the lower-friction path for operators who are not comfortable with terminal-heavy workflows, while the CLI remains available and the UI is expected to keep improving over time.
+- **`README.md`** + **`docs/user/GETTING-STARTED.md`** + **`docs/user/DEPLOYMENT.md`**: Clarified that a real domain is recommended for the broader control-plane and service DNS/TLS model, not only for Headscale, and that Namecheap API credentials are optional unless you choose Namecheap-managed DNS automation or the Namecheap-backed wildcard TLS modes.
+
+## [1.13.42] — 2026-04-12
+
+### Documentation
+- **`README.md`** + **`docs/README.md`** + **`docs/user/CONCEPT.md`** + **`docs/user/GUIDE.md`** + **`ui/README.md`**: Reframed the product narrative around the real self-hosting gap the blueprint is trying to close: not just getting services online, but operating a growing private service ecosystem with credible backup/restore, observability, DNS/TLS automation, minimal public exposure, and a repeatable security model.
+
 ### Added
 - **`.github/workflows/ci.yml`**: Added public CI quality gates for Terraform validation, UI unit tests, and deterministic local static verification suites (`static-gateway`, `dashboard-json`, `dns-helper-local`) on push and pull requests.
 - **`docs/roadmap/DELIVERY-MILESTONES.md`**: Added a published delivery plan with milestone scope, acceptance criteria, verification commands, and public artifacts, separate from private funding strategy notes.

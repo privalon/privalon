@@ -603,6 +603,37 @@
 # headscale DNS extra_records (added by the reconcile play in site.yml) make these
 # hostnames resolvable by every tailnet-connected device.
 
+- name: Build effective internal service routes for monitoring Caddy
+  ansible.builtin.set_fact:
+    internal_service_routes_effective:
+      - name: grafana
+        upstream_host: monitoring-vm
+        upstream_port: 3000
+      - name: prometheus
+        upstream_host: monitoring-vm
+        upstream_port: 9090
+
+- name: Add backrest route when backup is enabled
+  ansible.builtin.set_fact:
+    internal_service_routes_effective: "{{ internal_service_routes_effective + [{'name': 'backrest', 'upstream_host': 'monitoring-vm', 'upstream_port': 9898}] }}"
+  when: backup_enabled | default(false) | bool
+
+- name: Add service_catalog internal routes to monitoring Caddy routes
+  ansible.builtin.set_fact:
+    internal_service_routes_effective: "{{ internal_service_routes_effective + [_internal_route] }}"
+  vars:
+    _cfg: "{{ item.value | default({}) }}"
+    _internal_route:
+      name: "{{ _cfg.internal_alias | default(item.key) | trim }}"
+      upstream_host: "{{ _cfg.upstream_host | default(item.key ~ '-vm') }}"
+      upstream_port: "{{ (_cfg.upstream_port | default(80)) | int }}"
+  loop: "{{ service_catalog | default({}) | dict2items }}"
+  when:
+    - (_cfg.enabled | default(true) | bool)
+    - (_cfg.visibility | default('internal')) in ['internal', 'both']
+    - (_cfg.internal_alias | default('') | trim) != ''
+    - (_cfg.upstream_host | default(item.key ~ '-vm')) in hostvars
+
 - name: Remove monitoring Caddy container when internal PKI mode is disabled
   ansible.builtin.command:
     argv: ["docker", "rm", "-f", "monitoring-caddy"]

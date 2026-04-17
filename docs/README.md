@@ -1,12 +1,18 @@
 # Privalon
 
-## ThreeFold Grid blueprint (Terraform + Ansible)
+## Documentation Index
 
 Current release: see [../VERSION](../VERSION) (history in [../CHANGELOG.md](../CHANGELOG.md)).
 
 ## Product framing
 
-This repository is not only a Terraform + Ansible deployable. It is a blueprint for making digital sovereignty practical by default: private-by-default access, minimal public exposure, built-in backups, built-in observability, and a repeatable way to add more services without increasing operational chaos.
+Privalon is a framework for people who want digital sovereignty without accepting the usual self-hosting tradeoff of "the app runs, but the operating layer is fragile."
+
+Running one open-source service is usually the easy part. Running several private services with real restore confidence, sane DNS and TLS, minimal public exposure, observability, alerts, and repeatable operations is the hard part.
+
+The blueprint is meant to make that operating layer reusable: private by default, recoverable by design, and structured so additional services plug into the same model instead of creating new operational chaos.
+
+That includes a lower-friction local web UI path for people who do not want to drive every routine workflow from the terminal, while keeping the underlying Terraform + Ansible model available when direct control is needed.
 
 If you are new to the repo, read it in this order:
 
@@ -22,9 +28,13 @@ If you are new to the repo, read it in this order:
 ## What you get
 
 - Public gateway for HTTPS ingress (80/443)
-- Self-hosted tailnet control-plane (Headscale) for private access
+- Self-hosted tailnet control-plane (Headscale) for private access, with Headplane kept tailnet-only
 - Embedded DERP relay on the control VM as standard fallback for non-direct client paths
 - Private internal workloads (no public IPv4 by default)
+- Tailscale-first administration with post-bootstrap public SSH lockdown
+- Automated encrypted backups to dual S3-compatible backends
+- Portable control-plane recovery with a stable recovery line and continuously refreshed bundle in backup storage
+- Built-in observability: Prometheus, Grafana, Loki, health checks, and packaged dashboards
 - Post-deploy verification scripts under `scripts/tests/`
 - **Local web UI** (`make ui`) — deployment dashboard, live log streaming, and config editor
 
@@ -32,7 +42,7 @@ If you are new to the repo, read it in this order:
 
 - After Ansible finishes, plan to administer hosts from a tailnet-connected machine.
 - ThreeFold “no console” reality: if you lose access, recovery is usually **replace/redeploy**.
-- When backup storage is configured, each successful deploy also refreshes a portable control-plane recovery bundle and prints a one-line restore token for fresh-machine recovery.
+- When backup storage is configured, each successful deploy refreshes a portable control-plane recovery bundle in backup storage. The recovery line is designed to be saved offline once and reused for fresh-machine restore, rather than reissued on every normal deploy.
 - Deploy and restore automatically migrate the blueprint-managed environment data model when older environment files are restored or reused. This is separate from service-data backup/restore.
 - The gateway exit-node path is part of the shipped tailnet workflow: the blueprint now installs the required Headscale internet ACL, gateway forwarding/firewall settings, and an end-to-end regression check in `./scripts/tests/run.sh tailnet-management`.
 
@@ -56,6 +66,7 @@ If you are new to the repo, read it in this order:
 ### Roadmap / design notes
 - Multi-environment model: [technical/ARCHITECTURE.md#multi-environment-model](technical/ARCHITECTURE.md#multi-environment-model)
 - Environment operations: [technical/OPERATIONS.md#working-with-environments](technical/OPERATIONS.md#working-with-environments)
+- Forgejo first-service spec (service selection + visibility contract): [roadmap/forgejo-first-service-spec.md](roadmap/forgejo-first-service-spec.md)
 - Portable recovery bundle and restore: [technical/ARCHITECTURE.md#control-plane-recovery-bundle](technical/ARCHITECTURE.md#control-plane-recovery-bundle) + [technical/OPERATIONS.md#portable-recovery-bundle-and-restore](technical/OPERATIONS.md#portable-recovery-bundle-and-restore)
 - DNS routing and service visibility roadmap (remaining work): [roadmap/dns-and-visibility.md](roadmap/dns-and-visibility.md)
 - Published delivery milestones: [roadmap/DELIVERY-MILESTONES.md](roadmap/DELIVERY-MILESTONES.md)
@@ -72,163 +83,3 @@ Repo-wide Copilot workflow and guardrails: [../.github/copilot-instructions.md](
 Contributing:
 - [../CONTRIBUTING.md](../CONTRIBUTING.md)
 - [../SECURITY.md](../SECURITY.md)
-
-This repo contains a starter blueprint to deploy a small multi-VM setup on the ThreeFold Grid using Terraform, then configure it with Ansible.
-
-- **Gateway VM** with **public IPv4** (public edge: 80/443, reverse proxy, optional exit node with Headscale default-route approval handled during converge)
-- **Control VM** with **public IPv4** (runs **Headscale** on 443; **Headplane** stays tailnet-only on the control node)
-- **Workload VMs** with **no public IPv4** (default: monitoring VM with Prometheus + Grafana)
-
-- Architecture: [technical/ARCHITECTURE.md](technical/ARCHITECTURE.md)
-- Main guide: [user/GUIDE.md](user/GUIDE.md)
-- Operations runbook: [technical/OPERATIONS.md](technical/OPERATIONS.md)
-
-## Quick start
-
-### Install local dependencies first
-
-The repo assumes a few local tools are already present. On a fresh Ubuntu or Debian machine, install them before using either the Web UI or the CLI:
-
-```bash
-sudo apt update
-sudo apt install -y ca-certificates curl git jq lsof make openssh-client python3 python3-pip python3-venv rsync
-sudo apt install -y ansible
-sudo snap install terraform --classic
-```
-
-What these are used for:
-
-- `make`, `python3`, `python3-pip`, `lsof`: local Web UI (`make ui-install`, `make ui`, `make ui-stop`)
-- `terraform`, `ansible-playbook`: actual infrastructure deploys
-- `ssh`, `rsync`, `jq`, `curl`, `git`: deploy/restore helper scripts and normal operator workflow
-
-If `apt install make` reports `no installation candidate`, your package metadata is incomplete. Run `sudo apt update` first. On stripped-down Ubuntu images, also ensure the standard Ubuntu repositories are enabled:
-
-```bash
-sudo apt install -y software-properties-common
-sudo add-apt-repository universe
-sudo apt update
-```
-
-After that, re-run the install command above.
-
-### Option A — Web UI (recommended)
-
-No terminal editing required. A locally-hosted dashboard handles configuration, deployment, and live log streaming.
-
-```bash
-# Install the UI's Python packages (fastapi, uvicorn, pyyaml, python-dotenv,
-# aiofiles, python-hcl2) once the OS-level dependencies above are present.
-make ui-install
-
-# Start the UI
-make ui
-```
-
-Open **http://localhost:8090**, select your environment in the **Configure** tab, fill in the form (credentials, SSH keys, DNS), then click **Deploy** in the **Deploy** tab. See [user/GUIDE.md](user/GUIDE.md) and [../ui/README.md](../ui/README.md) for a full walkthrough.
-
-For `full`, `gateway`, and `control` deploys, the Deploy tab's **Existing Infrastructure** dropdown preselects whether the UI should converge in place (`--no-destroy`) or force a destroy-and-recreate cycle (`--yes`).
-
-### Option B — CLI (one-command deploy)
-
-Once the local dependencies above are installed, configure your environment:
-
-```bash
-cd environments/prod
-cp secrets.env.example secrets.env  && $EDITOR secrets.env
-cp terraform.tfvars.example terraform.tfvars && $EDITOR terraform.tfvars
-```
-
-Deploy everything in one command:
-
-```bash
-# From the repo root:
-./scripts/deploy.sh full --env prod --join-local
-```
-
-This runs Terraform + Ansible in sequence, extracts outputs, and optionally joins your workstation to the tailnet.
-
-If you enable `public_service_tls_mode: namecheap` or `internal_service_tls_mode: namecheap`, treat the first activation as a Namecheap-specific two-pass flow: let the initial deploy finish, whitelist the current gateway public IP in Namecheap's API settings, then run `./scripts/deploy.sh gateway --env <env>` once. Other TLS modes/providers continue in one pass.
-
-Certificate lifecycle summary:
-
-- Public hostnames: either Caddy issues and renews per-host Let's Encrypt certificates automatically, or the gateway serves one wildcard certificate for `*.base_domain` when `public_service_tls_mode: namecheap` is enabled.
-- Internal monitoring aliases in `internal` mode: private CA on the monitoring VM, no public ACME path.
-- Internal monitoring aliases in `namecheap` mode: gateway-side wildcard certificate with automatic renewal through Namecheap DNS-01, but the gateway public IP must remain allowlisted in Namecheap for renewal to keep working.
-
-After completion, access is **Tailscale-only**:
-
-- SSH: `ssh root@<tailscale-ip>`
-- Grafana: `http://<monitoring-tailscale-ip>:3000`
-- Prometheus: `http://<monitoring-tailscale-ip>:9090`
-- Headplane: `http://control-vm.<magic-dns-domain>:3000` or `http://<control-tailscale-ip>:3000`
-
-Important:
-
-- The `firewall` role locks down **public SSH**. After the playbook completes, manage hosts via **Tailscale SSH**.
-- Assume there is **no VM console** to recover access. If you need a temporary safety net during bootstrap, set `firewall_allow_public_ssh_from_cidrs` (see [technical/OPERATIONS.md](technical/OPERATIONS.md)).
-
-## One-command deploy helpers
-
-```bash
-./scripts/deploy.sh full    --env prod --join-local
-./scripts/deploy.sh gateway --env prod
-./scripts/deploy.sh control --env prod
-```
-
-Notes:
-
-- These commands detect existing Terraform state and will ask before destroying anything.
-- A backup hook runs first before destructive redeploys: `scripts/hooks/backup.sh`.
-- If the control VM is corrupted/destroyed, you can recreate it and restore Headscale from backup. See the control recovery section in [technical/OPERATIONS.md](technical/OPERATIONS.md).
-
-### Joining your deploy machine to the tailnet
-
-```bash
-./scripts/deploy.sh full --join-local
-```
-
-Force re-auth if already connected to another tailnet: add `--rejoin-local`.
-
-### Temporary public SSH allowlist (bootstrap safety net)
-
-```bash
-./scripts/deploy.sh full --allow-ssh-from-my-ip
-```
-
-Or specify a CIDR: `--allow-ssh-from "203.0.113.10/32"`.
-
-With `--join-local`, the allowlist is removed automatically at the end. Otherwise, follow the manual firewall-lockdown steps in [technical/OPERATIONS.md](technical/OPERATIONS.md).
-
-## Run the verification tests
-
-After a deploy, you can run the repo’s end-to-end checks from the repo root:
-
-```bash
-PREFER_TAILSCALE=1 ./scripts/tests/run.sh bootstrap-smoke
-PREFER_TAILSCALE=1 REQUIRE_TS_SSH=1 ./scripts/tests/run.sh tailnet-management
-```
-
-## Versioning and releases
-
-This repo now uses a single repo-wide Semantic Versioning source of truth:
-
-- `VERSION`: current release number
-- `CHANGELOG.md`: human-readable history in Keep a Changelog format
-- `scripts/release.sh`: helper to inspect or bump versions
-
-Useful commands:
-
-```bash
-make version
-make changelog
-make release-patch
-make release-minor
-make release-major
-```
-
-Release rule of thumb:
-
-- Patch: fixes, small doc/test updates, no intended workflow change
-- Minor: new repo features, new services, materially improved workflows
-- Major: breaking layout, compatibility, or operational model changes

@@ -40,6 +40,13 @@ workloads = {
     memory_mb = 4096
     rootfs_mb = 16384
   }
+
+  # forgejo = {
+  #   # node_id    = 790   # required if use_scheduler = false
+  #   cpu       = 2
+  #   memory_mb = 4096
+  #   rootfs_mb = 20480
+  # }
 }
 
 # ── SSH access ─────────────────────────────────────────────────────────

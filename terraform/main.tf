@@ -14,7 +14,9 @@ locals {
 locals {
   gateway_deployment_name = "${var.name}_gateway"
   control_deployment_name = "${var.name}_control"
-  core_deployment_name    = "${var.name}_core"
+  workload_deployment_names = {
+    for name in keys(var.workloads) : name => "${var.name}_${name}"
+  }
 
   # TFGrid enforces globally unique network names. Append deployment_tag (date/time)
   # so each fresh deploy gets a unique name and avoids "global workload ... exists: conflict".
@@ -32,10 +34,10 @@ locals {
 }
 
 resource "grid_scheduler" "sched" {
-  count = local.scheduler_enabled ? 1 : 0
+  for_each = local.scheduler_enabled ? { for name in local.scheduler_request_names : name => name } : {}
 
   dynamic "requests" {
-    for_each = toset(local.scheduler_request_names)
+    for_each = [each.key]
     content {
       name = requests.value
 
@@ -55,12 +57,12 @@ resource "grid_scheduler" "sched" {
 }
 
 locals {
-  resolved_gateway_node_id = var.gateway_node_id != null ? var.gateway_node_id : (local.scheduler_enabled ? grid_scheduler.sched[0].nodes["gateway"] : null)
-  resolved_control_node_id = var.control_node_id != null ? var.control_node_id : (local.scheduler_enabled ? grid_scheduler.sched[0].nodes["control"] : null)
+  resolved_gateway_node_id = var.gateway_node_id != null ? var.gateway_node_id : (local.scheduler_enabled ? try(grid_scheduler.sched["gateway"].nodes["gateway"], null) : null)
+  resolved_control_node_id = var.control_node_id != null ? var.control_node_id : (local.scheduler_enabled ? try(grid_scheduler.sched["control"].nodes["control"], null) : null)
 
   resolved_workload_node_ids = {
     for name, w in var.workloads :
-    name => (try(w.node_id, null) != null ? w.node_id : (local.scheduler_enabled ? grid_scheduler.sched[0].nodes[name] : null))
+    name => (try(w.node_id, null) != null ? w.node_id : (local.scheduler_enabled ? try(grid_scheduler.sched[name].nodes[name], null) : null))
   }
 
   vm_node_ids = merge(
@@ -132,8 +134,8 @@ resource "grid_deployment" "gateway" {
   }
 }
 
-resource "grid_deployment" "core" {
-  name         = local.core_deployment_name
+resource "grid_deployment" "control" {
+  name         = local.control_deployment_name
   node         = local.resolved_control_node_id
   network_name = grid_network.net.name
 
@@ -154,29 +156,32 @@ resource "grid_deployment" "core" {
       VM_ROLE = "control"
     }
   }
+}
 
-  # Workload VMs (no public IPv4)
-  dynamic "vms" {
-    for_each = var.workloads
-    content {
-      name        = vms.key
-      flist       = vms.value.flist
-      cpu         = vms.value.cpu
-      memory      = vms.value.memory_mb
-      rootfs_size = vms.value.rootfs_mb
-      entrypoint  = vms.value.entrypoint
-      publicip    = false
+resource "grid_deployment" "workloads" {
+  for_each     = var.workloads
+  name         = local.workload_deployment_names[each.key]
+  node         = local.resolved_workload_node_ids[each.key]
+  network_name = grid_network.net.name
 
-      mycelium_ip_seed = random_bytes.mycelium_seed[vms.key].hex
+  vms {
+    name        = each.key
+    flist       = each.value.flist
+    cpu         = each.value.cpu
+    memory      = each.value.memory_mb
+    rootfs_size = each.value.rootfs_mb
+    entrypoint  = each.value.entrypoint
+    publicip    = false
 
-      env_vars = merge(
-        {
-          SSH_KEY = local.injected_ssh_key
-          VM_ROLE = "workload"
-          VM_NAME = vms.key
-        },
-        vms.value.env_vars
-      )
-    }
+    mycelium_ip_seed = random_bytes.mycelium_seed[each.key].hex
+
+    env_vars = merge(
+      {
+        SSH_KEY = local.injected_ssh_key
+        VM_ROLE = "workload"
+        VM_NAME = each.key
+      },
+      each.value.env_vars
+    )
   }
 }

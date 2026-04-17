@@ -39,6 +39,31 @@
         - base_domain | length > 0
         - "'control-vm' in hostvars"
         - (hostvars['control-vm']['tf_public_ip'] | default(hostvars['control-vm']['ansible_host']) | default('')) != ''
+
+    - name: Validate service_catalog schema
+      ansible.builtin.assert:
+        that:
+          - service_catalog is mapping
+        fail_msg: service_catalog must be a mapping (service name -> config object).
+      run_once: true
+      delegate_to: localhost
+      become: false
+
+    - name: Validate service_catalog entries
+      ansible.builtin.assert:
+        that:
+          - item.value is mapping
+          - (item.value.runtime | default('ansible')) in ['docker', 'ansible', 'plain']
+          - (item.value.visibility | default('internal')) in ['internal', 'external', 'both']
+          - ((item.value.visibility | default('internal')) not in ['internal', 'both']) or ((item.value.internal_alias | default('') | trim) != '')
+          - ((item.value.visibility | default('internal')) not in ['external', 'both']) or ((item.value.external_subdomain | default('') | trim) != '')
+        fail_msg: >-
+          Invalid service_catalog entry for {{ item.key }}. Expected runtime=docker|ansible|plain,
+          visibility=internal|external|both, and alias/subdomain fields for selected visibility.
+      loop: "{{ service_catalog | default({}) | dict2items }}"
+      run_once: true
+      delegate_to: localhost
+      become: false
   roles:
     - common
 
@@ -149,17 +174,44 @@
   gather_facts: false
   tags: [headscale, tailscale]
   tasks:
-    - name: Build headscale DNS extra_records from internal service proxy IP
+    - name: Build base internal service routes
       ansible.builtin.set_fact:
-        headscale_extra_dns_records: >-
+        internal_service_routes:
+          - name: grafana
+            upstream_host: monitoring-vm
+            upstream_port: 3000
+          - name: prometheus
+            upstream_host: monitoring-vm
+            upstream_port: 9090
+
+    - name: Add backrest internal route when backup is enabled
+      ansible.builtin.set_fact:
+        internal_service_routes: "{{ internal_service_routes + [{'name': 'backrest', 'upstream_host': 'monitoring-vm', 'upstream_port': 9898}] }}"
+      when: backup_enabled | default(false) | bool
+
+    - name: Add service_catalog internal routes
+      ansible.builtin.set_fact:
+        internal_service_routes: "{{ internal_service_routes + [_route] }}"
+      vars:
+        _cfg: "{{ item.value | default({}) }}"
+        _route:
+          name: "{{ _cfg.internal_alias | default(item.key) | trim }}"
+          upstream_host: "{{ _cfg.upstream_host | default(item.key ~ '-vm') }}"
+          upstream_port: "{{ (_cfg.upstream_port | default(80)) | int }}"
+      loop: "{{ service_catalog | default({}) | dict2items }}"
+      when:
+        - (_cfg.enabled | default(true) | bool)
+        - (_cfg.visibility | default('internal')) in ['internal', 'both']
+        - (_cfg.internal_alias | default('') | trim) != ''
+        - (_cfg.upstream_host | default(item.key ~ '-vm')) in hostvars
+
+    - name: Resolve internal service proxy IP
+      ansible.builtin.set_fact:
+        _internal_service_proxy_ip: >-
           {{
-            [
-              {'name': 'grafana.'     + headscale_magic_dns_base_domain, 'value': _internal_service_proxy_ip},
-              {'name': 'prometheus.'  + headscale_magic_dns_base_domain, 'value': _internal_service_proxy_ip},
-              {'name': 'backrest.'    + headscale_magic_dns_base_domain, 'value': _internal_service_proxy_ip}
-            ]
-            if (_internal_service_proxy_ip | trim != '' and (headscale_magic_dns_base_domain | default('') | trim) != '')
-            else []
+            (hostvars['gateway-vm']['tailscale_ip'] | default(_tailscale_ip_map.get('gateway-vm', '')))
+            if (internal_service_tls_mode | default('internal')) == 'namecheap'
+            else (hostvars['monitoring-vm']['tailscale_ip'] | default(_tailscale_ip_map.get('monitoring-vm', '')))
           }}
       vars:
         _tailscale_ip_map: >-
@@ -172,13 +224,38 @@
             if (tailscale_local_inventory_dir | default('') | trim) != ''
             else {}
           }}
-        _internal_service_proxy_ip: >-
-          {{
-            (hostvars['gateway-vm']['tailscale_ip'] | default(_tailscale_ip_map.get('gateway-vm', '')))
-            if (internal_service_tls_mode | default('internal')) == 'namecheap'
-            else (hostvars['monitoring-vm']['tailscale_ip'] | default(_tailscale_ip_map.get('monitoring-vm', '')))
-          }}
+
+    - name: Initialize headscale extra DNS records
+      ansible.builtin.set_fact:
+        headscale_extra_dns_records: []
       when: (headscale_magic_dns_base_domain | default('') | trim) != ''
+
+    - name: Build headscale DNS extra_records from internal service routes
+      ansible.builtin.set_fact:
+        headscale_extra_dns_records: "{{ headscale_extra_dns_records + [ {'name': item.name ~ '.' ~ headscale_magic_dns_base_domain, 'value': _internal_service_proxy_ip} ] }}"
+      loop: "{{ internal_service_routes | default([]) }}"
+      when:
+        - (headscale_magic_dns_base_domain | default('') | trim) != ''
+        - (_internal_service_proxy_ip | default('') | trim) != ''
+
+    - name: Persist compiled service catalog artifact
+      ansible.builtin.copy:
+        dest: "{{ tailscale_local_inventory_dir }}/service-catalog.json"
+        mode: "0644"
+        content: >-
+          {{
+            {
+              'schema_version': 1,
+              'generated_by': 'ansible/playbooks/site.yml',
+              'service_catalog': (service_catalog | default({})),
+              'internal_service_routes': (internal_service_routes | default([])),
+              'headscale_extra_dns_records': (headscale_extra_dns_records | default([]))
+            }
+            | to_nice_json
+          }}
+      delegate_to: localhost
+      become: false
+      when: (tailscale_local_inventory_dir | default('') | trim) != ''
 
     - name: Re-render headscale config with service extra_records
       ansible.builtin.template:
@@ -246,6 +323,53 @@
   tags: [monitoring]
   roles:
     - monitoring
+
+- name: Optional workload service roles
+  hosts: workloads
+  gather_facts: true
+  tags: [workloads, services]
+  tasks:
+    - name: Resolve service catalog entry for this workload
+      ansible.builtin.set_fact:
+        workload_service_config: "{{ (service_catalog | default({})).get(tf_name | default(''), {}) }}"
+
+    - name: Determine whether this workload service is enabled
+      ansible.builtin.set_fact:
+        workload_service_enabled: >-
+          {{
+            (workload_service_config | length) > 0
+            and (workload_service_config.enabled | default(true) | bool)
+            and (tf_name | default('')) not in ['monitoring']
+          }}
+
+    - name: Validate enabled workload runtime profile
+      ansible.builtin.assert:
+        that:
+          - (workload_service_config.runtime | default('ansible')) in ['docker', 'ansible', 'plain']
+        fail_msg: "service_catalog.{{ tf_name }}.runtime must be docker, ansible, or plain."
+      when: workload_service_enabled | bool
+
+    - name: Check whether workload role exists
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/../roles/{{ tf_name }}"
+      register: workload_role_path
+      delegate_to: localhost
+      become: false
+      when: workload_service_enabled | bool
+
+    - name: Fail when enabled workload role is missing
+      ansible.builtin.fail:
+        msg: "service_catalog enables {{ tf_name }}, but ansible/roles/{{ tf_name }} is missing."
+      when:
+        - workload_service_enabled | bool
+        - not (workload_role_path.stat.exists | default(false))
+
+    - name: Run enabled workload service role
+      ansible.builtin.include_role:
+        name: "{{ tf_name }}"
+      when:
+        - workload_service_enabled | bool
+        - workload_role_path.stat.exists | default(false)
 
 - name: Backup (Restic encrypted backups)
   hosts: all

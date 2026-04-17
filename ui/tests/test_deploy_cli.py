@@ -963,6 +963,7 @@ EOF
                 '"status": "refreshed", '
                 '"created_at_utc": "2026-03-24T12:00:00Z", '
                 '"message": "Recovery bundle refreshed to both backup storages.", '
+                '"recovery_line": {"state": "created", "fingerprint": "abc123def456", "printed_in_summary": true}, '
                 '"primary": {"status": "ok"}, '
                 '"secondary": {"status": "ok"}'
                 '}\n',
@@ -992,6 +993,56 @@ EOF
             self.assertIn("bp1.testing-recovery-line", output)
             # The restore command shows a generic placeholder; the actual line is shown above it
             self.assertIn("./scripts/restore.sh --recovery-line", output)
+
+    def test_deployment_summary_does_not_reprint_stable_recovery_line(self):
+        repo_root = Path(__file__).resolve().parents[2]
+
+        with tempfile.TemporaryDirectory(prefix="deploy-recovery-summary-stable-") as tempdir_name:
+            tempdir = Path(tempdir_name)
+            env_dir = tempdir / "environments" / "summary"
+            inventory_dir = env_dir / "inventory"
+            recovery_dir = env_dir / ".recovery"
+            inventory_dir.mkdir(parents=True, exist_ok=True)
+            recovery_dir.mkdir(parents=True, exist_ok=True)
+
+            (inventory_dir / "terraform-outputs.json").write_text(
+                '{"control_public_ip": {"value": "203.0.113.10"}}\n',
+                encoding="utf-8",
+            )
+            (recovery_dir / "status.json").write_text(
+                '{'
+                '"status": "refreshed", '
+                '"created_at_utc": "2026-03-24T12:00:00Z", '
+                '"message": "Recovery bundle refreshed to both backup storages.", '
+                '"recovery_line": {"state": "unchanged", "fingerprint": "abc123def456", "printed_in_summary": false}, '
+                '"primary": {"status": "ok"}, '
+                '"secondary": {"status": "ok"}'
+                '}\n',
+                encoding="utf-8",
+            )
+            (recovery_dir / "latest-recovery-line").write_text(
+                "bp1.testing-recovery-line\n",
+                encoding="utf-8",
+            )
+
+            env = os.environ.copy()
+            env["INVENTORY_JSON"] = str(inventory_dir / "terraform-outputs.json")
+            env["NO_COLOR"] = "1"
+
+            proc = subprocess.run(
+                [str(repo_root / "scripts" / "helpers" / "deployment-summary.sh")],
+                cwd=repo_root,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+
+            output = proc.stdout
+            self.assertIn("Portable Recovery", output)
+            self.assertNotIn("Break-glass recovery line:", output)
+            self.assertIn("Already initialized", output)
+            self.assertIn("abc123def456", output)
 
     def test_namecheap_summary_suppresses_second_run_warning_when_wildcard_is_active(self):
         repo_root = Path(__file__).resolve().parents[2]
@@ -1098,9 +1149,31 @@ EOF
                 check=True,
             )
 
-            self.assertTrue((env_dir / ".recovery" / "latest-recovery-line").exists())
+            line_file = env_dir / ".recovery" / "latest-recovery-line"
+            self.assertTrue(line_file.exists())
+            first_line = line_file.read_text(encoding="utf-8").strip()
+
+            subprocess.run(
+                [
+                    str(Path(__file__).resolve().parents[2] / "scripts" / "helpers" / "recovery_bundle.py"),
+                    "refresh",
+                    "--repo-root",
+                    str(workspace_root),
+                    "--env",
+                    env_name,
+                ],
+                cwd=Path(__file__).resolve().parents[2],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+
+            second_line = line_file.read_text(encoding="utf-8").strip()
+            self.assertEqual(first_line, second_line)
             latest_files = list(primary_root.rglob("latest.json"))
             self.assertTrue(latest_files)
+            self.assertIn('"bundle_password":', latest_files[0].read_text(encoding="utf-8"))
         finally:
             temp_env_root.cleanup()
 

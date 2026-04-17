@@ -7,6 +7,7 @@ For a user-facing overview and deploy flow, see:
 - Main guide: [../user/GUIDE.md](../user/GUIDE.md)
 
 This document is a **step-by-step** runbook for common lifecycle scenarios.
+It is written to keep operations predictable and low-improvisation when incidents happen, matching the concept goal of recoverability as a first-class requirement.
 
 ## Environments
 
@@ -70,7 +71,7 @@ After every deployment (`./scripts/deploy.sh full/control/gateway`), a **deploym
 
 - **Infrastructure**: Public/private IPs, hostnames
 - **Services**: URLs, ports, access methods for Headscale, Prometheus, Grafana, and the main observability dashboards
-- **Portable recovery**: recovery-bundle refresh status for primary and secondary storage, plus the latest opaque recovery line when configured
+- **Portable recovery**: recovery-bundle refresh status for primary and secondary storage, plus either the break-glass recovery line when it is new/changed or a reminder that the existing line remains valid
 - **Relay fallback**: embedded DERP status on the control VM for difficult client/private-node paths
 - **Tailnet Status**: Registered nodes and their Tailscale IPs
 - **Next Steps**: Connection instructions for various scenarios (join tailnet, SSH, access dashboards)
@@ -170,7 +171,7 @@ If you need to see the summary again after deployment, or if you want to refresh
 
 **Adding a new service example:**
 
-If you add a new service (e.g., VaultWarden), the minimal changes are:
+If you add a new service (e.g., Vaultwarden), the minimal changes are:
 
 - **deployment-summary.sh**: Add a `print_subsection` for it in `print_services()` function
 - **docs/technical/OPERATIONS.md**: Document the expected `print_vaultwarden()` section
@@ -181,7 +182,7 @@ This ensures:
 - No "where is the service?" questions after deployment
 - Runbook stays up-to-date without manual edits per-service
 
-When backup storage is configured, the same summary now prints the break-glass recovery line and stores the latest generated copy locally in `environments/<env>/.recovery/latest-recovery-line`.
+When backup storage is configured, the same summary stores the recovery line locally in `environments/<env>/.recovery/latest-recovery-line`. It prints the line when first created or when the recovery-backend configuration changes; otherwise it shows that the existing offline copy remains valid.
 
 ### Troubleshooting the summary
 
@@ -190,6 +191,8 @@ If the summary shows warnings or missing data:
 - **No Terraform outputs**: Run `terraform -chdir=terraform output -json > ansible/inventory/terraform-outputs.json`
 - **No Tailscale IPs**: Ansible hasn't run yet; run `ansible-playbook -i inventory/tfgrid.py playbooks/site.yml`
 - **Services not accessible**: Check Tailscale connectivity and firewall ACLs; not all services are exposed publicly by design
+
+When a deploy uses a control-only or other partial Ansible limit, observability on non-monitoring hosts can temporarily skip Alloy log shipping if `monitoring-vm` does not yet have a persisted Tailscale IP in `tailscale-ips.json`. This is expected in bootstrap-only passes; the next full converge (or any run that includes the monitoring host) will populate the mapping and enable log shipping.
 
 When `internal_service_tls_mode: namecheap` is enabled, the deployment summary checks whether
 the gateway wildcard certificate is already active. If the current gateway public IP was
@@ -1075,9 +1078,9 @@ It is separate from the per-service Restic backup system.
 
 The recovery line printed after deploy is wrong-eye fool-protection, not a standalone cryptographic trust anchor.
 
-- The line is intentionally opaque so a casual observer does not immediately recognize storage endpoints, credentials, and the bundle password.
+- The line is intentionally opaque so a casual observer does not immediately recognize storage endpoints and credentials.
 - Anyone with the codebase and the recovery line may still be able to decode it.
-- Real confidentiality comes from encrypting the recovery bundle before upload.
+- Real confidentiality still comes from the encrypted bundle in backup storage and the bundle-specific decrypt password kept in the latest recovery pointer.
 
 ## What the bundle contains
 
@@ -1100,8 +1103,9 @@ After a successful `full`, `gateway`, or `control` deploy, the repo now:
 1. Assembles the current environment files and local state into an encrypted bundle
 2. Embeds the current `data_model_version` in the bundle metadata
 3. Uploads that bundle to the primary and secondary S3-compatible backup storages under `control-recovery/<env>/...`
-4. Refreshes `latest.json` on each successful backend
-5. Prints one opaque `bp1...` recovery line in the deployment summary
+4. Refreshes `latest.json` on each successful backend, including the current bundle-specific decrypt password
+5. Reuses the existing opaque `bp1...` recovery line when the recovery-backend configuration is unchanged
+6. Prints the recovery line in the deployment summary only when it is first created or when it changes
 
 If the primary upload fails, the recovery step is treated as failed. If the secondary upload fails, the deploy completes in a degraded state and the summary says so explicitly.
 

@@ -146,6 +146,61 @@
     fail_msg: >-
       public_service_tls_mode must be either letsencrypt or namecheap.
 
+- name: Initialize derived public service routes
+  ansible.builtin.set_fact:
+    gateway_services_catalog_routes: []
+
+- name: Add external service_catalog routes
+  ansible.builtin.set_fact:
+    gateway_services_catalog_routes: "{{ gateway_services_catalog_routes + [_derived_service] }}"
+  vars:
+    _cfg: "{{ item.value | default({}) }}"
+    _derived_service:
+      name: "{{ _cfg.external_subdomain | default(item.key) | trim }}"
+      upstream_host: "{{ _cfg.upstream_host | default(item.key ~ '-vm') }}"
+      upstream_port: "{{ (_cfg.upstream_port | default(80)) | int }}"
+  loop: "{{ service_catalog | default({}) | dict2items }}"
+  when:
+    - (_cfg.enabled | default(true) | bool)
+    - (_cfg.visibility | default('internal')) in ['external', 'both']
+    - (_cfg.external_subdomain | default('') | trim) != ''
+    - (_cfg.upstream_host | default(item.key ~ '-vm')) in hostvars
+
+- name: Build effective gateway services list
+  ansible.builtin.set_fact:
+    gateway_services_effective: "{{ (gateway_services | default([])) + (gateway_services_catalog_routes | default([])) }}"
+
+- name: Initialize effective internal service routes
+  ansible.builtin.set_fact:
+    internal_service_routes_effective:
+      - name: grafana
+        upstream_host: monitoring-vm
+        upstream_port: 3000
+      - name: prometheus
+        upstream_host: monitoring-vm
+        upstream_port: 9090
+
+- name: Add backrest internal route when backup is enabled
+  ansible.builtin.set_fact:
+    internal_service_routes_effective: "{{ internal_service_routes_effective + [{'name': 'backrest', 'upstream_host': 'monitoring-vm', 'upstream_port': 9898}] }}"
+  when: backup_enabled | default(false) | bool
+
+- name: Add internal service_catalog routes to effective internal routes
+  ansible.builtin.set_fact:
+    internal_service_routes_effective: "{{ internal_service_routes_effective + [_internal_route] }}"
+  vars:
+    _cfg: "{{ item.value | default({}) }}"
+    _internal_route:
+      name: "{{ _cfg.internal_alias | default(item.key) | trim }}"
+      upstream_host: "{{ _cfg.upstream_host | default(item.key ~ '-vm') }}"
+      upstream_port: "{{ (_cfg.upstream_port | default(80)) | int }}"
+  loop: "{{ service_catalog | default({}) | dict2items }}"
+  when:
+    - (_cfg.enabled | default(true) | bool)
+    - (_cfg.visibility | default('internal')) in ['internal', 'both']
+    - (_cfg.internal_alias | default('') | trim) != ''
+    - (_cfg.upstream_host | default(item.key ~ '-vm')) in hostvars
+
 - name: Validate gateway_services entries
   ansible.builtin.assert:
     that:
@@ -156,8 +211,8 @@
     fail_msg: >-
       Invalid gateway_services entry {{ item | to_nice_json }}. Each item must include
       name, upstream_host, upstream_port, and upstream_host must exist in inventory.
-  loop: "{{ gateway_services | default([]) }}"
-  when: (gateway_services | default([]) | length) > 0
+  loop: "{{ gateway_services_effective | default([]) }}"
+  when: (gateway_services_effective | default([]) | length) > 0
 
 - name: Determine whether Namecheap-backed internal wildcard TLS is enabled
   ansible.builtin.set_fact:
@@ -172,7 +227,7 @@
     gateway_public_wildcard_enabled: >-
       {{
         (public_service_tls_mode | default('letsencrypt')) == 'namecheap'
-        and (gateway_services | default([]) | length) > 0
+        and (gateway_services_effective | default([]) | length) > 0
       }}
 
 - name: Fail if public wildcard TLS is enabled with the legacy gateway_domains schema
@@ -182,7 +237,7 @@
       gateway_domains/gateway_upstream_* config first.
   when:
     - (public_service_tls_mode | default('letsencrypt')) == 'namecheap'
-    - (gateway_services | default([]) | length) == 0
+    - (gateway_services_effective | default([]) | length) == 0
     - (gateway_domains | default([]) | length) > 0
 
 - name: Fail if public wildcard TLS is enabled without base_domain
@@ -203,7 +258,7 @@
       public_service_tls_mode=namecheap requires single-label gateway_services names so
       *.{{ base_domain | default('<base_domain>') }} covers every public hostname.
       Invalid entry: {{ item | to_nice_json }}
-  loop: "{{ gateway_services | default([]) }}"
+  loop: "{{ gateway_services_effective | default([]) }}"
   when: gateway_public_wildcard_enabled
 
 - name: Determine whether the gateway Namecheap plugin is required
@@ -340,9 +395,9 @@
     gateway_public_wildcard_probe_hostname: >-
       {{
         (
-          (gateway_services | first).name
-          if '.' in ((gateway_services | first).name | default('') | trim)
-          else ((gateway_services | first).name | trim) ~ '.' ~ (base_domain | trim)
+          (gateway_services_effective | first).name
+          if '.' in ((gateway_services_effective | first).name | default('') | trim)
+          else ((gateway_services_effective | first).name | trim) ~ '.' ~ (base_domain | trim)
         )
       }}
   when: gateway_public_wildcard_enabled

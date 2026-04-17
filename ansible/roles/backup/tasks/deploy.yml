@@ -193,9 +193,8 @@
   vars:
     _host_services: >-
       {{
-        (group_names | map('regex_replace', '^control$', 'headscale') | list)
-        + (group_names | map('regex_replace', '^gateway$', 'gateway') | list)
-        + (group_names | map('regex_replace', '^monitoring$', 'monitoring') | list)
+        (group_names | list)
+        + (group_names | map('regex_replace', '^control$', 'headscale') | list)
         + ['tailscale']
       }}
 

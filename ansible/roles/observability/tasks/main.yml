@@ -128,20 +128,47 @@
     - (item.enabled_var | default('') | trim) == '' or (vars[item.enabled_var] | default(false) | bool)
     - (item.host_groups | default([]) | length) == 0 or (item.host_groups | intersect(group_names) | length) > 0
 
+- name: Derive monitoring-vm tailscale IP from hostvars or persisted map
+  ansible.builtin.set_fact:
+    observability_monitoring_tailscale_ip: >-
+      {{
+        (hostvars.get('monitoring-vm', {}).get('tailscale_ip', '') | trim)
+        or (observability_tailscale_ip_map.get('monitoring-vm', '') | trim)
+      }}
+
+- name: Determine whether Loki log shipping can be configured
+  ansible.builtin.set_fact:
+    observability_log_collection_active: >-
+      {{
+        (logging_enabled | default(true) | bool)
+        and (service_log_collection_enabled | default(true) | bool)
+        and ((observability_monitoring_tailscale_ip | default('') | trim) != '')
+      }}
+
+- name: Warn when monitoring-vm tailscale IP is unavailable for this run
+  ansible.builtin.debug:
+    msg: >-
+      monitoring-vm tailscale_ip is empty; skipping Alloy log shipping on {{ inventory_hostname }} for this run.
+  when:
+    - logging_enabled | default(true)
+    - service_log_collection_enabled | default(true)
+    - not (observability_log_collection_active | bool)
+
 - name: Derive Loki write URL from monitoring node Tailscale IP
   ansible.builtin.set_fact:
     observability_loki_write_url: >-
-      http://{{ hostvars['monitoring-vm']['tailscale_ip'] | default(observability_tailscale_ip_map.get('monitoring-vm', '')) }}:3100/loki/api/v1/push
+      http://{{ observability_monitoring_tailscale_ip }}:3100/loki/api/v1/push
   when:
     - logging_enabled | default(true)
-    - service_log_collection_enabled | default(true)
+    - observability_log_collection_active | bool
 
-- name: Fail if Loki write URL cannot be derived
-  ansible.builtin.fail:
-    msg: monitoring-vm tailscale_ip is empty; cannot configure Alloy log shipping.
+- name: Warn when Loki write URL cannot be derived
+  ansible.builtin.debug:
+    msg: monitoring-vm tailscale_ip is empty; cannot configure Alloy log shipping in this run.
   when:
     - logging_enabled | default(true)
     - service_log_collection_enabled | default(true)
+    - not (observability_log_collection_active | bool)
     - observability_loki_write_url is not defined or (observability_loki_write_url | trim) == 'http://:3100/loki/api/v1/push'
 
 - name: Create observability directories
@@ -214,7 +241,7 @@
     mode: "0644"
   when:
     - logging_enabled | default(true)
-    - service_log_collection_enabled | default(true)
+    - observability_log_collection_active | bool
 
 - name: Remove existing Alloy container (if any)
   ansible.builtin.command:
@@ -224,7 +251,7 @@
   failed_when: false
   when:
     - logging_enabled | default(true)
-    - service_log_collection_enabled | default(true)
+    - observability_log_collection_active | bool
 
 - name: Run Alloy (tailnet-only metrics, Loki log shipping)
   ansible.builtin.command:
@@ -255,4 +282,4 @@
   changed_when: observability_alloy_run.rc == 0
   when:
     - logging_enabled | default(true)
-    - service_log_collection_enabled | default(true)
+    - observability_log_collection_active | bool

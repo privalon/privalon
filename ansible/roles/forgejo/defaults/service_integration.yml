@@ -1,0 +1,19 @@
+---
+service_integration:
+  service_name: forgejo
+  display_name: Forgejo
+  host_groups: [forgejo]
+  supported_runtime_profiles: [docker, ansible, plain]
+  default_upstream_scheme: http
+  default_upstream_port: 3000
+  default_internal_alias: git
+  default_external_subdomain: git
+  lifecycle:
+    install_role: forgejo
+    service_unit: forgejo
+    health_endpoint: /api/healthz
+  summary:
+    category: Source Hosting
+    default_path: /
+  tests:
+    smoke_path: /api/healthz

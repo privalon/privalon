@@ -104,11 +104,26 @@ recovery_line="$(head -n1 "${env_dir}/.recovery/latest-recovery-line")"
 python3 "${HELPER}" decode-line --recovery-line "${recovery_line}" > "${temp_root}/decoded.json"
 assert_contains '"environment": "drill"' "${temp_root}/decoded.json"
 assert_contains '"endpoint": "file://' "${temp_root}/decoded.json"
+if grep -Fq 'bundle_password' "${temp_root}/decoded.json"; then
+  die "Stable recovery line should not embed the per-bundle password"
+fi
 
 latest_primary="$(find "${primary_root}" -name latest.json | head -n1)"
 latest_secondary="$(find "${secondary_root}" -name latest.json | head -n1)"
 assert_file "${latest_primary}"
 assert_file "${latest_secondary}"
+assert_contains '"bundle_password":' "${latest_primary}"
+assert_contains '"bundle_password":' "${latest_secondary}"
+
+log "Refreshing the portable recovery bundle again; the recovery line should stay stable"
+set +e
+python3 "${HELPER}" refresh --repo-root "${workspace}" --env "${env_name}" > "${temp_root}/refresh-second.json"
+refresh_second_rc=$?
+set -e
+[[ "${refresh_second_rc}" -eq 0 ]] || die "Expected second helper refresh to succeed, got ${refresh_second_rc}"
+
+recovery_line_second="$(head -n1 "${env_dir}/.recovery/latest-recovery-line")"
+[[ "${recovery_line_second}" == "${recovery_line}" ]] || die "Recovery line changed on a normal refresh"
 
 manifest_primary="$(python3 - <<PYTHON
 import json
