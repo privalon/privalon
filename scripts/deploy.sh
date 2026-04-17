@@ -2076,6 +2076,10 @@ main() {
   scope="${scope//_/-}"
   local full_args=("${scope_raw}" "$@")
 
+  # Make scope available to helper functions (e.g. wait_for_ssh) consistently,
+  # including converge runs that do not execute pre-destroy backup hooks.
+  export DEPLOY_SCOPE="${scope}"
+
   # Allow DEPLOY_YES=1 from the environment; --yes still overrides.
   DEPLOY_YES="${DEPLOY_YES:-}"
   while [[ $# -gt 0 ]]; do

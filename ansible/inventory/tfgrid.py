@@ -129,9 +129,6 @@ def main() -> int:
 
     headscale_url_override = os.environ.get("HEADSCALE_URL", "").strip()
 
-    private_ip_values = [ip for ip in workloads_private_ips.values() if ip]
-    private_ips_unique = len(set(private_ip_values)) == len(private_ip_values)
-
     inventory = {
         "_meta": {"hostvars": {}},
         "gateway": {"hosts": []},
@@ -188,7 +185,7 @@ def main() -> int:
     # When prefer_tailscale is False (e.g. Tailscale SSH is ACL-blocked from this controller),
     # control's public SSH may also be locked down by the firewall role, so we route through the
     # gateway (reachable via public IP) to control's private IP (always open from the private CIDR).
-    if control_public_ip or control_private_ip:
+    if control_public_ip or control_private_ip or prefer_tailscale:
         host = "control-vm"
         inventory["control"]["hosts"].append(host)
         hostvars_control: dict = {
@@ -199,7 +196,17 @@ def main() -> int:
         if prefer_tailscale:
             # Use Tailscale IP directly (works when this controller is an ACL-allowed SSH peer).
             ts_ip = tailscale_ips.get(host) if isinstance(tailscale_ips, dict) else None
-            hostvars_control["ansible_host"] = ts_ip or control_public_ip or control_private_ip
+            if ts_ip:
+                hostvars_control["ansible_host"] = ts_ip
+            elif control_private_ip and gateway_public_ip:
+                # In Tailscale mode with missing control TS IP, avoid a brittle fallback to
+                # public SSH (often locked down) and route via gateway to control private IP.
+                hostvars_control["ansible_host"] = control_private_ip
+                hostvars_control["ansible_ssh_common_args"] = (
+                    "-o ProxyCommand=\"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+                    f"-W %h:%p root@{gateway_public_ip}\" "
+                    "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+                )
         elif control_public_ip:
             # Use control's public IP directly on initial deploys (before firewall locks it down).
             # This avoids routing through the gateway (ProxyJump), which can hit MaxStartups
@@ -250,7 +257,9 @@ def main() -> int:
 
     for name, ip in workloads_private_ips.items():
         mycelium_ip = workloads_mycelium_ips.get(name)
-        ansible_host = ip if private_ips_unique else (mycelium_ip or ip)
+        # Prefer private network addressing through the configured jump host.
+        # Keep Mycelium only as a fallback when private IP is unavailable.
+        ansible_host = ip or mycelium_ip
         if not ansible_host:
             continue
 

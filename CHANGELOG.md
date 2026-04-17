@@ -6,6 +6,11 @@ The format is based on Keep a Changelog, and this repository now follows Semanti
 
 ## [Unreleased]
 
+## [1.13.52] — 2026-04-17
+
+### Fixed
+- **`scripts/deploy.sh`**: Exported `DEPLOY_SCOPE` from `main` before helper execution so `wait_for_ssh` can reliably detect `full|control` scope and wait for control SSH in converge (non-destructive) runs. This fixes cases where deploy logs showed only gateway wait and then failed immediately on `control-vm` with port 22 `Connection refused`.
+
 ## [1.13.51] — 2026-04-17
 
 ### Documentation
