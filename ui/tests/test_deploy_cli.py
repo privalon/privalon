@@ -183,7 +183,7 @@ class DeployCliFreshTailnetTests(unittest.TestCase):
                 exit 0
                 """
             )
-            ansible_script = "#!/usr/bin/env bash\nexit 1\n"
+            ansible_script = "#!/usr/bin/env bash\nexit 0\n"
 
             for name, content in {
                 "terraform": terraform_script,
