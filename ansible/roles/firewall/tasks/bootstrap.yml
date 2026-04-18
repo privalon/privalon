@@ -1,0 +1,75 @@
+---
+# Bootstrap firewall rules: Keep public SSH open during initial deployment
+# Run in common role (before tailscale). Enables initial host access until
+# Tailscale is configured, then hardening rules take over afterward.
+
+- name: Ensure ufw is installed (Debian/Ubuntu)
+  ansible.builtin.apt:
+    name: ufw
+    state: present
+    update_cache: true
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Reset UFW to remove stale rules (authoritative baseline)
+  ansible.builtin.command:
+    argv: ["ufw", "--force", "reset"]
+  register: ufw_reset
+  changed_when: true
+  when: ansible_facts.os_family == 'Debian'
+
+- name: UFW default deny incoming
+  ansible.builtin.command:
+    argv: ["ufw", "default", "deny", "incoming"]
+  register: ufw_default_in
+  changed_when: "'Default incoming policy changed' in (ufw_default_in.stdout | default(''))"
+  when: ansible_facts.os_family == 'Debian'
+
+- name: UFW default allow outgoing
+  ansible.builtin.command:
+    argv: ["ufw", "default", "allow", "outgoing"]
+  register: ufw_default_out
+  changed_when: "'Default outgoing policy changed' in (ufw_default_out.stdout | default(''))"
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Firewall | Allow SSH from TF private CIDR (bootstrap/jump-host)
+  ansible.builtin.ufw:
+    rule: allow
+    port: "22"
+    proto: tcp
+    from_ip: "{{ tf_private_cidr }}"
+  when:
+    - ansible_facts.os_family == 'Debian'
+    - (tf_private_cidr | default('') | trim) != ""
+
+- name: Allow SSH from public IP (bootstrap only, hardening will restrict later)
+  ansible.builtin.command:
+    argv: ["ufw", "allow", "22/tcp"]
+  register: ufw_allow_ssh_public
+  changed_when: "'Skipping' not in (ufw_allow_ssh_public.stdout | default(''))"
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Allow Tailscale UDP on public interface (required for peer discovery)
+  # This must stay aligned with tailscale_udp_port in the tailscale role.
+  # Without it, servers can appear online in the tailnet while laptops fail to
+  # initiate new sessions because inbound UDP to the public node is dropped.
+  ansible.builtin.command:
+    argv: ["ufw", "allow", "{{ tailscale_udp_port }}/udp"]
+  register: ufw_allow_tailscale_udp
+  changed_when: "'Skipping' not in (ufw_allow_tailscale_udp.stdout | default(''))"
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Firewall | Allow public SSH from allowlist (temporary recovery)
+  ansible.builtin.ufw:
+    rule: allow
+    port: "22"
+    proto: tcp
+    from_ip: "{{ item }}"
+  loop: "{{ firewall_allow_public_ssh_from_cidrs | default([]) }}"
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Enable UFW
+  ansible.builtin.command:
+    argv: ["ufw", "--force", "enable"]
+  register: ufw_enable
+  changed_when: "'Firewall is active' in (ufw_enable.stdout | default(''))"
+  when: ansible_facts.os_family == 'Debian'

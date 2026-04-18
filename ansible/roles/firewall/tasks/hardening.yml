@@ -1,0 +1,69 @@
+---
+# Firewall hardening rules: Restrict to Tailscale-only after tailnet is established
+# Run in dedicated play after tailscale role. At this point all hosts have Tailscale IPs
+# and we can safely restrict public SSH access.
+
+- name: Allow all incoming on tailscale0
+  ansible.builtin.command:
+    argv: ["ufw", "allow", "in", "on", "tailscale0"]
+  register: ufw_allow_ts
+  changed_when: "'Skipping' not in (ufw_allow_ts.stdout | default(''))"
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Allow SSH on tailscale0 only (restrict from public now)
+  ansible.builtin.command:
+    argv: ["ufw", "allow", "in", "on", "tailscale0", "to", "any", "port", "22", "proto", "tcp"]
+  register: ufw_allow_ssh_ts
+  changed_when: "'Skipping' not in (ufw_allow_ssh_ts.stdout | default(''))"
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Deny public SSH (now that Tailscale is available)
+  ansible.builtin.command:
+    argv: ["ufw", "delete", "allow", "22/tcp"]
+  register: ufw_delete_ssh_public
+  changed_when: true
+  failed_when: "'ERROR' in (ufw_delete_ssh_public.stderr | default(''))"
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Allow public web ports on gateway
+  ansible.builtin.command:
+    argv: ["ufw", "allow", "{{ item }}/tcp"]
+  register: ufw_allow_gateway
+  changed_when: "'Skipping' not in (ufw_allow_gateway.stdout | default(''))"
+  loop:
+    - "80"
+    - "443"
+  when: ansible_facts.os_family == 'Debian' and inventory_hostname in (groups['gateway'] | default([]))
+
+- name: Allow routed exit-node traffic from tailscale0 to the public interface on gateway
+  ansible.builtin.command:
+    argv: ["ufw", "route", "allow", "in", "on", "tailscale0", "out", "on", "{{ ansible_default_ipv4.interface }}"]
+  register: ufw_allow_gateway_exit_forward
+  changed_when: "'Skipping' not in (ufw_allow_gateway_exit_forward.stdout | default(''))"
+  when: ansible_facts.os_family == 'Debian' and inventory_hostname in (groups['gateway'] | default([]))
+
+- name: Allow return routed traffic from public interface to tailscale0 on gateway
+  ansible.builtin.command:
+    argv: ["ufw", "route", "allow", "in", "on", "{{ ansible_default_ipv4.interface }}", "out", "on", "tailscale0"]
+  register: ufw_allow_gateway_exit_return
+  changed_when: "'Skipping' not in (ufw_allow_gateway_exit_return.stdout | default(''))"
+  when: ansible_facts.os_family == 'Debian' and inventory_hostname in (groups['gateway'] | default([]))
+
+- name: Allow Headscale HTTP+HTTPS on control
+  ansible.builtin.command:
+    argv: ["ufw", "allow", "{{ item }}/tcp"]
+  register: ufw_allow_control
+  changed_when: "'Skipping' not in (ufw_allow_control.stdout | default(''))"
+  loop:
+    - "443"
+  when: ansible_facts.os_family == 'Debian' and inventory_hostname in (groups['control'] | default([]))
+
+- name: Allow DERP STUN on control
+  ansible.builtin.command:
+    argv: ["ufw", "allow", "3478/udp"]
+  register: ufw_allow_derp_stun
+  changed_when: "'Skipping' not in (ufw_allow_derp_stun.stdout | default(''))"
+  when:
+    - ansible_facts.os_family == 'Debian'
+    - inventory_hostname in (groups['control'] | default([]))
+    - headscale_enable_derp | default(true)
