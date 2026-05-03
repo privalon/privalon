@@ -1,0 +1,88 @@
+---
+# Phase 2: Services and workloads
+#
+# Runs under BLUEPRINT_INVENTORY_MODE=operational (tailnet IPs only).
+# Assumes a stable tailnet — every host is reachable via its tailnet IP.
+# The phase1_gate must have passed before this playbook runs.
+
+- name: Node exporter (bind to Tailscale)
+  hosts: all
+  gather_facts: true
+  tags: [node_exporter]
+  roles:
+    - node_exporter
+
+- name: Monitoring stack (Prometheus + Grafana)
+  hosts: monitoring
+  gather_facts: true
+  tags: [monitoring]
+  roles:
+    - monitoring
+
+- name: Optional workload service roles
+  hosts: workloads
+  gather_facts: true
+  tags: [workloads, services]
+  tasks:
+    - name: Resolve service catalog entry for this workload
+      ansible.builtin.set_fact:
+        workload_service_config: "{{ (service_catalog | default({})).get(tf_name | default(''), {}) }}"
+
+    - name: Determine whether this workload service is enabled
+      ansible.builtin.set_fact:
+        workload_service_enabled: >-
+          {{
+            (workload_service_config | length) > 0
+            and (workload_service_config.enabled | default(true) | bool)
+            and (tf_name | default('')) not in ['monitoring']
+          }}
+
+    - name: Validate enabled workload runtime profile
+      ansible.builtin.assert:
+        that:
+          - (workload_service_config.runtime | default('ansible')) in ['docker', 'ansible', 'plain']
+        fail_msg: "service_catalog.{{ tf_name }}.runtime must be docker, ansible, or plain."
+      when: workload_service_enabled | bool
+
+    - name: Check whether workload role exists
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/../roles/{{ tf_name }}"
+      register: workload_role_path
+      delegate_to: localhost
+      become: false
+      when: workload_service_enabled | bool
+
+    - name: Fail when enabled workload role is missing
+      ansible.builtin.fail:
+        msg: "service_catalog enables {{ tf_name }}, but ansible/roles/{{ tf_name }} is missing."
+      when:
+        - workload_service_enabled | bool
+        - not (workload_role_path.stat.exists | default(false))
+
+    - name: Run enabled workload service role
+      ansible.builtin.include_role:
+        name: "{{ tf_name }}"
+      when:
+        - workload_service_enabled | bool
+        - workload_role_path.stat.exists | default(false)
+
+- name: Backup (Restic encrypted backups)
+  hosts: all
+  gather_facts: true
+  tags: [backup]
+  roles:
+    - backup
+
+- name: Gateway reverse proxy + exit node
+  hosts: gateway
+  gather_facts: true
+  tags: [gateway]
+  roles:
+    - gateway
+
+- name: Service observability (Alloy + local health checks)
+  hosts: all
+  gather_facts: true
+  tags: [observability]
+  roles:
+    - observability

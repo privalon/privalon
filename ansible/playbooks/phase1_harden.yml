@@ -1,0 +1,14 @@
+---
+# Phase 1: Firewall Hardening
+#
+# Runs under BLUEPRINT_INVENTORY_MODE=operational (tailnet IPs only).
+# The controller has already joined the tailnet and every host is reachable
+# over its tailnet IP. This play closes public SSH and applies final hardening.
+
+- name: Firewall baseline (lock down public SSH)
+  hosts: all
+  gather_facts: true
+  any_errors_fatal: true
+  tags: [firewall]
+  roles:
+    - firewall

@@ -1,0 +1,122 @@
+---
+# Phase 1: Gate
+#
+# Validates the phase-1 invariant: every inventory host is reachable from the
+# controller over its tailnet IP. Runs on localhost, connection: local.
+# If any host fails, the gate emits an actionable error and exits non-zero.
+# Phase 2 does not run unless this gate passes.
+
+- name: Phase 1 gate — validate tailnet reachability for all hosts
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Read live tailscale status from controller
+      ansible.builtin.command:
+        argv: ["tailscale", "status", "--json"]
+      register: _ts_status_raw
+      changed_when: false
+
+    - name: Parse tailscale status
+      ansible.builtin.set_fact:
+        _ts_status: "{{ _ts_status_raw.stdout | from_json }}"
+
+    - name: Verify controller is online on the tailnet
+      ansible.builtin.assert:
+        that:
+          - (_ts_status.Self.Online | default(false)) | bool
+        fail_msg: >-
+          [phase1-gate] The controller is not online on the tailnet.
+          Ensure tailscale is running on this machine and joined to the deployment's Headscale.
+
+    - name: Read terraform outputs for host list
+      ansible.builtin.set_fact:
+        _tf_outputs: "{{ lookup('file', (tailscale_local_inventory_dir | default('')) ~ '/terraform-outputs.json') | from_json }}"
+      when: (tailscale_local_inventory_dir | default('') | trim) != ''
+
+    - name: Build expected host list
+      ansible.builtin.set_fact:
+        _expected_hosts: >-
+          {{
+            ['gateway-vm', 'control-vm']
+            + (
+                ((_tf_outputs.workloads_private_ips.value | default(_tf_outputs.workloads_private_ips | default({}))) | list)
+                | map('regex_replace', '^(?!.*-vm$)(.*)', '\1-vm')
+                | list
+              )
+          }}
+      when: _tf_outputs is defined
+
+    - name: Build peer IP map from tailscale status (includes Self)
+      ansible.builtin.set_fact:
+        _peer_map: >-
+          {{
+            (_ts_status.Peer | default({}) | dict2items
+             | map(attribute='value')
+             | list)
+            + [_ts_status.Self | default({})]
+          }}
+
+    - name: Load persisted tailscale IP map (fallback for hosts not in peer list)
+      ansible.builtin.set_fact:
+        _persisted_ips: >-
+          {{ lookup('file', (tailscale_local_inventory_dir | default('')) ~ '/tailscale-ips.json', errors='ignore')
+             | default('{}', true) | from_json }}
+      when: (tailscale_local_inventory_dir | default('') | trim) != ''
+
+    - name: Validate each host has a live online tailnet peer or persisted IP
+      ansible.builtin.assert:
+        that:
+          - (_host_peer | length > 0) or (_fallback_ip | length > 0)
+        fail_msg: >-
+          [phase1-gate] {{ item }} is not reachable over tailscale
+          (no peer found and no persisted IP available).
+          Converge cannot proceed without a healthy tailnet for every host.
+          To recover this single node, run:
+            scripts/deploy.sh {{ item }} --env {{ blueprint_env | default('unknown') }} --yes
+      loop: "{{ _expected_hosts | default([]) }}"
+      vars:
+        _host_peer: >-
+          {{ _peer_map | default([])
+             | selectattr('HostName', 'defined')
+             | selectattr('Online', 'equalto', true)
+             | list
+             | selectattr('HostName', 'search', '^' ~ item | regex_replace('-vm$', '') ~ '(-vm)?(-[a-z0-9]+)?$')
+             | list }}
+        _fallback_ip: "{{ (_persisted_ips | default({}))[item] | default('') }}"
+
+    - name: SSH probe each host over tailnet IP
+      ansible.builtin.command:
+        argv:
+          - ssh
+          - -o
+          - ConnectTimeout=5
+          - -o
+          - BatchMode=yes
+          - -o
+          - StrictHostKeyChecking=no
+          - -o
+          - UserKnownHostsFile=/dev/null
+          - "root@{{ _host_ts_ip }}"
+          - "true"
+      loop: "{{ _expected_hosts | default([]) }}"
+      vars:
+        _host_peer: >-
+          {{ _peer_map | default([])
+             | selectattr('HostName', 'defined')
+             | selectattr('Online', 'equalto', true)
+             | list
+             | selectattr('HostName', 'search', '^' ~ item | regex_replace('-vm$', '') ~ '(-vm)?(-[a-z0-9]+)?$')
+             | list }}
+        _fallback_ip: "{{ (_persisted_ips | default({}))[item] | default('') }}"
+        _host_ts_ip: "{{ (_host_peer[0].TailscaleIPs | default(['']))[0] | default('') if (_host_peer | length > 0) else _fallback_ip }}"
+      register: _ssh_probe_results
+      changed_when: false
+      failed_when: _ssh_probe_results.rc != 0
+
+    - name: Phase 1 gate passed
+      ansible.builtin.debug:
+        msg: >-
+          [phase1-gate] All {{ (_expected_hosts | default([])) | length }} hosts are reachable
+          over the tailnet. Proceeding to phase 2.
